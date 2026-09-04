@@ -73,10 +73,12 @@ async function getCaloriesBurnedToday(userId = null) {
     const accessToken = await getGoogleAccessToken(userId);
     const startTimeMillis = getStartOfDayMillis();
     const endTimeMillis = Date.now() + 60000;
+    const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
+    const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
 
     let aggBurned = 0;
 
-    // 1. Aggregate endpoint for com.google.calories.expended
+    // 1. Try Aggregate endpoint for com.google.calories.expended
     try {
       const requestBody = {
         aggregateBy: [
@@ -97,8 +99,7 @@ async function getCaloriesBurnedToday(userId = null) {
 
       const buckets = response.data?.bucket || [];
       for (const bucket of buckets) {
-        const datasets = bucket.dataset || [];
-        for (const dataset of datasets) {
+        for (const dataset of bucket.dataset || []) {
           for (const point of dataset.point || []) {
             for (const val of point.value || []) {
               if (typeof val.fpVal === 'number') aggBurned += val.fpVal;
@@ -111,50 +112,41 @@ async function getCaloriesBurnedToday(userId = null) {
       console.log('Aggregate burned error:', aggErr.message);
     }
 
-    // 2. Query individual DataSources for calories.expended (evaluated individually, never summed across sources)
-    let maxSourceBurned = 0;
+    // 2. Query the official merged or platform calories stream directly for fresher points
+    let mergeBurned = 0;
     try {
-      const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
-      const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
-
       const dataSourcesRes = await axios.get('https://www.googleapis.com/fitness/v1/users/me/dataSources', {
         headers: { 'Authorization': `Bearer ${accessToken}` },
         timeout: 8000,
       });
 
       const sources = dataSourcesRes.data?.dataSource || [];
-      const relevantSources = sources.filter(s => {
-        const name = (s.dataType?.name || '').toLowerCase();
-        return name.includes('calories.expended');
-      });
+      const mergeSource = sources.find(s => {
+        const id = (s.dataStreamId || '').toLowerCase();
+        const type = (s.dataType?.name || '').toLowerCase();
+        return type.includes('calories.expended') && (id.includes('merge_calories_expended') || id.includes('platform_calories_expended'));
+      }) || sources.find(s => (s.dataType?.name || '').toLowerCase().includes('calories.expended'));
 
-      for (const src of relevantSources) {
-        try {
-          const dsId = encodeURIComponent(src.dataStreamId);
-          const datasetUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/${dsId}/datasets/${startNanos}-${endNanos}`;
-          const dsRes = await axios.get(datasetUrl, {
-            headers: { 'Authorization': `Bearer ${accessToken}` },
-            timeout: 8000,
-          });
+      if (mergeSource) {
+        const dsId = encodeURIComponent(mergeSource.dataStreamId);
+        const datasetUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/${dsId}/datasets/${startNanos}-${endNanos}`;
+        const dsRes = await axios.get(datasetUrl, {
+          headers: { 'Authorization': `Bearer ${accessToken}` },
+          timeout: 8000,
+        });
 
-          let currentSourceBurned = 0;
-          for (const point of dsRes.data?.point || []) {
-            for (const val of point.value || []) {
-              if (typeof val.fpVal === 'number') currentSourceBurned += val.fpVal;
-              else if (typeof val.intVal === 'number') currentSourceBurned += val.intVal;
-            }
+        for (const point of dsRes.data?.point || []) {
+          for (const val of point.value || []) {
+            if (typeof val.fpVal === 'number') mergeBurned += val.fpVal;
+            else if (typeof val.intVal === 'number') mergeBurned += val.intVal;
           }
-
-          if (currentSourceBurned > maxSourceBurned) {
-            maxSourceBurned = currentSourceBurned;
-          }
-        } catch (_) {}
+        }
       }
     } catch (dsErr) {
-      console.log('DataSources burned error:', dsErr.message);
+      console.log('Merge source burned error:', dsErr.message);
     }
 
-    const total = Math.max(aggBurned, maxSourceBurned);
+    const total = Math.max(aggBurned, mergeBurned);
 
     return {
       calories: Math.round(total),
@@ -215,89 +207,65 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
     const accessToken = await getGoogleAccessToken(userId);
     const startTimeMillis = getStartOfDayMillis();
     const endTimeMillis = Date.now() + 60000;
+    const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
+    const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
 
-    let aggConsumed = 0;
+    // 1. Fetch dataSources
+    const dataSourcesRes = await axios.get('https://www.googleapis.com/fitness/v1/users/me/dataSources', {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+      timeout: 8000,
+    });
 
-    // 1. Try standard aggregate endpoint
-    try {
-      const requestBody = {
-        aggregateBy: [
-          { dataTypeName: 'com.google.nutrition' },
-        ],
-        startTimeMillis,
-        endTimeMillis,
-        bucketByTime: { durationMillis: 86400000 },
-      };
+    const sources = dataSourcesRes.data?.dataSource || [];
+    
+    // Filter for nutrition sources
+    const allNutritionSources = sources.filter(s => {
+      const name = (s.dataType?.name || '').toLowerCase();
+      return name.includes('nutrition') || name.includes('calories.consumed');
+    });
 
-      const response = await axios.post(config.googleFit.fitnessApiUrl, requestBody, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 8000,
-      });
+    // If FatSecret specific sources exist, prioritize them to avoid mixing third-party mirrors
+    const fatsecretSources = allNutritionSources.filter(s => {
+      const id = (s.dataStreamId || '').toLowerCase();
+      const app = (s.application?.name || s.application?.packageName || '').toLowerCase();
+      return id.includes('fatsecret') || app.includes('fatsecret');
+    });
 
-      const buckets = response.data?.bucket || [];
-      for (const bucket of buckets) {
-        const datasets = bucket.dataset || [];
-        for (const dataset of datasets) {
-          for (const point of dataset.point || []) {
-            for (const val of point.value || []) {
-              aggConsumed += extractNutritionCalories(val);
+    const targetSources = fatsecretSources.length > 0 ? fatsecretSources : allNutritionSources;
+
+    // Deduplicate points across sources by unique key: `${startTimeNanos}_${endTimeNanos}_${calories}`
+    // This allows summing multiple different meals (breakfast, lunch, dinner)
+    // while strictly preventing double-counting if points are mirrored across multiple streams
+    const seenPoints = new Set();
+    let totalCalories = 0;
+
+    for (const src of targetSources) {
+      try {
+        const dsId = encodeURIComponent(src.dataStreamId);
+        const datasetUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/${dsId}/datasets/${startNanos}-${endNanos}`;
+        const dsRes = await axios.get(datasetUrl, {
+          headers: { 'Authorization': `Bearer ${accessToken}` },
+          timeout: 8000,
+        });
+
+        for (const point of dsRes.data?.point || []) {
+          for (const val of point.value || []) {
+            const cal = extractNutritionCalories(val);
+            if (cal > 0) {
+              const roundedCal = Math.round(cal * 10);
+              const pointKey = `${point.startTimeNanos}_${point.endTimeNanos}_${roundedCal}`;
+              if (!seenPoints.has(pointKey)) {
+                seenPoints.add(pointKey);
+                totalCalories += cal;
+              }
             }
           }
         }
-      }
-    } catch (aggErr) {
-      console.log('Aggregate nutrition error:', aggErr.message);
+      } catch (_) {}
     }
-
-    // 2. Query individual DataSources for nutrition (evaluated individually, never summed across sources)
-    let maxSourceConsumed = 0;
-    try {
-      const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
-      const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
-
-      const dataSourcesRes = await axios.get('https://www.googleapis.com/fitness/v1/users/me/dataSources', {
-        headers: { 'Authorization': `Bearer ${accessToken}` },
-        timeout: 8000,
-      });
-
-      const sources = dataSourcesRes.data?.dataSource || [];
-      const relevantSources = sources.filter(s => {
-        const name = (s.dataType?.name || '').toLowerCase();
-        return name.includes('nutrition') || name.includes('calories.consumed');
-      });
-
-      for (const src of relevantSources) {
-        try {
-          const dsId = encodeURIComponent(src.dataStreamId);
-          const datasetUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/${dsId}/datasets/${startNanos}-${endNanos}`;
-          const dsRes = await axios.get(datasetUrl, {
-            headers: { 'Authorization': `Bearer ${accessToken}` },
-            timeout: 8000,
-          });
-
-          let currentSourceConsumed = 0;
-          for (const point of dsRes.data?.point || []) {
-            for (const val of point.value || []) {
-              currentSourceConsumed += extractNutritionCalories(val);
-            }
-          }
-
-          if (currentSourceConsumed > maxSourceConsumed) {
-            maxSourceConsumed = currentSourceConsumed;
-          }
-        } catch (_) {}
-      }
-    } catch (dsErr) {
-      console.log('DataSources nutrition error:', dsErr.message);
-    }
-
-    const total = Math.max(aggConsumed, maxSourceConsumed);
 
     return {
-      calories: Math.round(total),
+      calories: Math.round(totalCalories),
       success: true,
     };
   } catch (error) {
