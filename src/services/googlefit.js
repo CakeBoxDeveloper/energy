@@ -93,15 +93,13 @@ async function getCaloriesBurnedToday(userId = null) {
     let totalBurned = 0;
     const buckets = response.data?.bucket || [];
 
-    if (buckets.length > 0) {
-      for (const bucket of buckets) {
-        const datasets = bucket.dataset || [];
-        for (const dataset of datasets) {
-          for (const point of dataset.point || []) {
-            for (const val of point.value || []) {
-              if (typeof val.fpVal === 'number') totalBurned += val.fpVal;
-              else if (typeof val.intVal === 'number') totalBurned += val.intVal;
-            }
+    for (const bucket of buckets) {
+      const datasets = bucket.dataset || [];
+      for (const dataset of datasets) {
+        for (const point of dataset.point || []) {
+          for (const val of point.value || []) {
+            if (typeof val.fpVal === 'number') totalBurned += val.fpVal;
+            else if (typeof val.intVal === 'number') totalBurned += val.intVal;
           }
         }
       }
@@ -132,44 +130,79 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
     const startTimeMillis = getStartOfDayMillis();
     const endTimeMillis = Date.now();
 
-    const requestBody = {
-      aggregateBy: [
-        { dataTypeName: 'com.google.nutrition' },
-        { dataTypeName: 'com.google.calories.consumed' },
-      ],
-      startTimeMillis,
-      endTimeMillis,
-    };
-
-    const response = await axios.post(config.googleFit.fitnessApiUrl, requestBody, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 8000,
-    });
-
     let totalConsumed = 0;
-    const buckets = response.data?.bucket || [];
 
-    for (const bucket of buckets) {
-      for (const dataset of bucket.dataset || []) {
-        for (const point of dataset.point || []) {
+    // 1. First attempt: Aggregate by com.google.nutrition.summary and com.google.calories.consumed
+    try {
+      const requestBody = {
+        aggregateBy: [
+          { dataTypeName: 'com.google.nutrition.summary' },
+          { dataTypeName: 'com.google.nutrition' },
+          { dataTypeName: 'com.google.calories.consumed' },
+        ],
+        startTimeMillis,
+        endTimeMillis,
+      };
+
+      const response = await axios.post(config.googleFit.fitnessApiUrl, requestBody, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 8000,
+      });
+
+      const buckets = response.data?.bucket || [];
+      for (const bucket of buckets) {
+        for (const dataset of bucket.dataset || []) {
+          for (const point of dataset.point || []) {
+            for (const val of point.value || []) {
+              if (val.mapVal) {
+                for (const entry of val.mapVal) {
+                  if ((entry.key === 'calories' || entry.key === 'energy') && typeof entry.value?.fpVal === 'number') {
+                    totalConsumed += entry.value.fpVal;
+                  }
+                }
+              } else if (typeof val.fpVal === 'number') {
+                totalConsumed += val.fpVal;
+              } else if (typeof val.intVal === 'number') {
+                totalConsumed += val.intVal;
+              }
+            }
+          }
+        }
+      }
+    } catch (aggErr) {
+      console.log('Google Fit nutrition aggregate error, falling back to raw datasets:', aggErr.message);
+    }
+
+    // 2. Second attempt if 0: Query raw merged nutrition dataset
+    if (totalConsumed === 0) {
+      try {
+        const startNanos = BigInt(startTimeMillis) * BigInt(1000000);
+        const endNanos = BigInt(endTimeMillis) * BigInt(1000000);
+        const rawUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/derived:com.google.nutrition:com.google.android.gms:merged/datasets/${startNanos}-${endNanos}`;
+
+        const rawRes = await axios.get(rawUrl, {
+          headers: { 'Authorization': `Bearer ${accessToken}` },
+          timeout: 8000,
+        });
+
+        for (const point of rawRes.data?.point || []) {
           for (const val of point.value || []) {
-            // For com.google.nutrition, calories is in mapVal with key 'calories'
             if (val.mapVal) {
               for (const entry of val.mapVal) {
-                if (entry.key === 'calories' && typeof entry.value?.fpVal === 'number') {
+                if ((entry.key === 'calories' || entry.key === 'energy') && typeof entry.value?.fpVal === 'number') {
                   totalConsumed += entry.value.fpVal;
                 }
               }
             } else if (typeof val.fpVal === 'number') {
               totalConsumed += val.fpVal;
-            } else if (typeof val.intVal === 'number') {
-              totalConsumed += val.intVal;
             }
           }
         }
+      } catch (rawErr) {
+        // Ignored fallback
       }
     }
 
