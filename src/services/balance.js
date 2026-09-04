@@ -24,28 +24,26 @@ function formatEnergyBalance(consumed, burned, dataTime = null) {
     statusText = `⚪ <b>Баланс:</b> потребление равно расходу.`;
   }
 
-  const consumedStr = `${consumed} ккал`.padStart(11, ' ');
-  const burnedStr = `${burned} ккал`.padStart(11, ' ');
-  const diffStr = `${formattedDiff}`.padStart(11, ' ');
-
   const timeLabel = dataTime
     ? `🕒 <i>Данные в Google Fit: от ${dataTime}</i>`
     : `🕒 <i>Обновлено в ${new Intl.DateTimeFormat('ru-RU', { timeZone: config.app?.timezone || 'Europe/Moscow', hour: '2-digit', minute: '2-digit' }).format(new Date())}</i>`;
 
-  const message = [
+  // Rich HTML message with native Telegram table (Bot API 10.1+)
+  const html = [
     `📊 <b>Энергетический баланс за сегодня:</b>`,
     ``,
-    `<code>Приход:   ${consumedStr}`,
-    `Расход:   ${burnedStr}`,
-    `──────────────────────`,
-    `Итог:     ${diffStr}</code>`,
+    `<table>`,
+    `<tr><th>📥 Приход</th><td>${consumed} ккал</td></tr>`,
+    `<tr><th>🔥 Расход</th><td>${burned} ккал</td></tr>`,
+    `<tr><th>⚡ Итог</th><td><b>${formattedDiff}</b></td></tr>`,
+    `</table>`,
     ``,
     `<blockquote>${statusText}</blockquote>`,
     ``,
     timeLabel,
   ].join('\n');
 
-  return message;
+  return html;
 }
 
 /**

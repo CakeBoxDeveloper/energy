@@ -176,16 +176,51 @@ async function sendReplaceMessage(ctx, text, extra = {}) {
   const oldMsgId = await getLastMessageId(userId);
   const pinnedMsgId = await getPinnedMessageId(userId);
 
-  // 2. Send the new message with reply_markup attached directly
+  // 2. Send the new message
   const newMsg = await ctx.reply(text, extra);
 
-  // 3. Immediately store new message ID
+  // 3. Store new message ID
   if (newMsg?.message_id) {
     await setLastMessageId(userId, newMsg.message_id);
   }
 
-  // 4. AFTER new message is visible, delete previous bot message
-  //    but NEVER delete the pinned message
+  // 4. Delete previous bot message — but NEVER delete the pinned message
+  if (oldMsgId && Number(oldMsgId) !== Number(pinnedMsgId)) {
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, Number(oldMsgId));
+    } catch (_) {}
+  }
+
+  return newMsg;
+}
+
+// ─── Rich message replace: uses sendRichMessage (Bot API 10.1+) ──────────────
+async function sendReplaceRichMessage(ctx, html, extra = {}) {
+  const userId = ctx.from.id;
+  const oldMsgId = await getLastMessageId(userId);
+  const pinnedMsgId = await getPinnedMessageId(userId);
+
+  // Try sendRichMessage first, fall back to regular reply if unavailable
+  let newMsg;
+  try {
+    newMsg = await ctx.api.sendRichMessage(ctx.chat.id, { html }, extra);
+  } catch (e) {
+    // Fallback: older client or API version — strip table tags and send as HTML
+    const fallbackText = html.replace(/<table>[\s\S]*?<\/table>/g, (match) => {
+      // Convert table rows to plain lines
+      return match
+        .replace(/<tr>/g, '').replace(/<\/tr>/g, '\n')
+        .replace(/<th>(.*?)<\/th>/g, '$1: ')
+        .replace(/<td>(.*?)<\/td>/g, '$1')
+        .replace(/<[^>]+>/g, '');
+    });
+    newMsg = await ctx.reply(fallbackText, { ...extra, parse_mode: 'HTML' });
+  }
+
+  if (newMsg?.message_id) {
+    await setLastMessageId(userId, newMsg.message_id);
+  }
+
   if (oldMsgId && Number(oldMsgId) !== Number(pinnedMsgId)) {
     try {
       await ctx.api.deleteMessage(ctx.chat.id, Number(oldMsgId));
@@ -243,9 +278,8 @@ async function sendBalanceReport(ctx) {
     const message = formatEnergyBalance(consumed, burned, dataTimeStr);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
-    // Send new message with updated reply keyboard, THEN delete previous message
-    await sendReplaceMessage(ctx, message, {
-      parse_mode: 'HTML',
+    // Send using Rich Message API for native table rendering, THEN delete previous message
+    await sendReplaceRichMessage(ctx, message, {
       reply_markup: keyboard,
     });
   } catch (error) {
