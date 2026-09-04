@@ -1,3 +1,4 @@
+const config = require('../config');
 const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./googlefit');
 
 /**
@@ -26,6 +27,14 @@ function formatEnergyBalance(consumed, burned) {
   const burnedStr = `${burned} ккал`.padStart(11, ' ');
   const diffStr = `${formattedDiff}`.padStart(11, ' ');
 
+  const now = new Date();
+  const timeStr = new Intl.DateTimeFormat('ru-RU', {
+    timeZone: config.app?.timezone || 'Europe/Moscow',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(now);
+
   const message = [
     `📊 <b>Энергетический баланс за сегодня:</b>`,
     ``,
@@ -37,6 +46,8 @@ function formatEnergyBalance(consumed, burned) {
     `└──────────────┴─────────────┘</code>`,
     ``,
     `<blockquote>${statusText}</blockquote>`,
+    ``,
+    `🕒 <i>Обновлено: ${timeStr}</i>`,
   ].join('\n');
 
   return message;
