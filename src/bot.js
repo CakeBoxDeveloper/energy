@@ -53,29 +53,27 @@ function buildPinnedMessageContent(isGoogleConnected, balanceData = null) {
     return {
       text: pinnedText,
       reply_markup: inlineKb([
-        [btn('⚙️ Подключите Google Fit', { callback_data: 'pinned_hint' })],
+        [{ text: '⚙️ Подключите Google Fit', callback_data: 'pinned_hint' }],
       ]),
     };
   }
 
   const { diff = 0 } = balanceData || {};
 
-  let btnLabel, btnStyle;
+  let btnLabel;
   if (diff > 0) {
     btnLabel = `❌ +${diff} ккал`;
-    btnStyle = 'danger';
   } else if (diff < 0) {
     btnLabel = `✅ ${diff} ккал`;
-    btnStyle = 'success';
   } else {
     btnLabel = `⚡ 0 ккал`;
-    btnStyle = undefined;
   }
 
+  // Note: inline keyboard buttons do not support 'style' — color is conveyed via emoji
   return {
     text: pinnedText,
     reply_markup: inlineKb([
-      [btn(btnLabel, { callback_data: 'pinned_hint', style: btnStyle })],
+      [{ text: btnLabel, callback_data: 'pinned_hint' }],
     ]),
   };
 }
@@ -94,7 +92,7 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
   const existingId = await getPinnedMessageId(userId);
 
   if (existingId) {
-    // Try to edit the existing pinned message — no new message, no duplicate
+    // Try to edit both text and inline keyboard of the existing pinned message
     try {
       await ctx.api.editMessageText(ctx.chat.id, Number(existingId), text, {
         parse_mode: 'HTML',
@@ -102,8 +100,17 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
       });
       return; // successfully updated — done
     } catch (e) {
-      // Message was deleted by user — fall through to create a new one
+      const errMsg = e?.description || e?.message || '';
+      // If content is identical Telegram returns this — still fine, no need to recreate
+      if (errMsg.includes('message is not modified')) return;
+      // Otherwise the message is gone — fall through to recreate
+      console.warn('ensurePinnedMessage edit failed:', errMsg);
     }
+
+    // Delete the old stale pinned message before creating a new one
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, Number(existingId));
+    } catch (_) {}
   }
 
   // Create a fresh pinned message and pin it
