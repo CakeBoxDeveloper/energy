@@ -34,7 +34,7 @@ function inlineKb(rows) {
   return { inline_keyboard: rows };
 }
 
-// ─── Bottom Reply Keyboard (1 button per row, Обновить is blue) ───────────────
+// ─── Bottom Reply Keyboard (1 button per row, Обновить is blue at very bottom)
 async function buildPersistentKeyboard(userId, balanceSummary = null) {
   const googleData = await getUserServiceData(userId, 'google');
   const isGoogleConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
@@ -57,12 +57,12 @@ async function buildPersistentKeyboard(userId, balanceSummary = null) {
 
   const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔵 Подключить Google Fit';
 
-  // ReplyKeyboardMarkup: 1 button per row, "🔄 Обновить баланс" is style 'primary' (blue)
+  // Order: 1. Balance, 2. Google Fit, 3. Обновить баланс (at the very bottom, blue)
   const keyboard = {
     keyboard: [
       [{ text: balanceBtnText, ...(balanceStyle ? { style: balanceStyle } : {}) }],
-      [{ text: '🔄 Обновить баланс', style: 'primary' }],
-      [{ text: googleBtnText, ...(isGoogleConnected ? { style: 'success' } : { style: 'primary' }) }]
+      [{ text: googleBtnText, ...(isGoogleConnected ? { style: 'success' } : { style: 'primary' }) }],
+      [{ text: '🔄 Обновить баланс', style: 'primary' }]
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -170,15 +170,21 @@ async function sendGoogleFitStatus(ctx) {
 Чтобы сменить Google-аккаунт, нажмите красную кнопку отключения:`;
 
     // 🟢 green "account" button + 🔴 red "disconnect" button
-    const replyMarkup = inlineKb([
+    const inlineMarkup = inlineKb([
       [btn(`🟢 Аккаунт: ${email}`, { callback_data: 'account_active_info', style: 'success' })],
       [btn('🔴 Отключить Google Fit',  { callback_data: 'disconnect_google', style: 'danger' })],
     ]);
 
+    // Send message with inline buttons
     await sendReplaceMessage(ctx, text, {
       parse_mode: 'HTML',
-      reply_markup: replyMarkup,
+      reply_markup: inlineMarkup,
     });
+
+    // Ensure persistent reply keyboard remains visible
+    await ctx.reply('👇', { reply_markup: keyboard }).then(msg => {
+      ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+    }).catch(() => {});
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
 
@@ -188,14 +194,19 @@ async function sendGoogleFitStatus(ctx) {
 Нажмите синюю кнопку ниже для авторизации под вашим Google-аккаунтом:`;
 
     // 🔵 blue "connect" button
-    const replyMarkup = inlineKb([
+    const inlineMarkup = inlineKb([
       [btn('🔵 Войти через Google', { url: authUrl, style: 'primary' })],
     ]);
 
     await sendReplaceMessage(ctx, text, {
       parse_mode: 'HTML',
-      reply_markup: replyMarkup,
+      reply_markup: inlineMarkup,
     });
+
+    // Ensure persistent reply keyboard remains visible
+    await ctx.reply('👇', { reply_markup: keyboard }).then(msg => {
+      ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
+    }).catch(() => {});
   }
 }
 
