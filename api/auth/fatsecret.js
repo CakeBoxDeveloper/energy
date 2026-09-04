@@ -4,10 +4,20 @@ const url = require('url');
 const config = require('../../src/config');
 const { setUserServiceData, getUserServiceData } = require('../../src/services/db');
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /**
- * Generates OAuth 1.0a signature for FatSecret REST API
+ * Generates OAuth 1.0a HMAC-SHA1 signature according to RFC 5849
  */
 function generateOAuthSignature(httpMethod, baseUrl, params, consumerSecret, tokenSecret = '') {
+  // Sort parameters alphabetically by encoded key
   const sortedKeys = Object.keys(params).sort();
   const paramString = sortedKeys
     .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
@@ -37,26 +47,21 @@ module.exports = async (req, res) => {
       return res.status(400).send('<h1>Ошибка: Не передан Telegram User ID</h1>');
     }
 
-    const clientId = config.fatsecret.clientId.trim();
-    const clientSecret = config.fatsecret.clientSecret.trim();
+    const clientId = (config.fatsecret.clientId || '').trim();
+    const clientSecret = (config.fatsecret.clientSecret || '').trim();
 
     if (!clientId || !clientSecret) {
       res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(`
         <div style="font-family:sans-serif; text-align:center; padding:40px;">
           <h2>⚠️ Ключи FatSecret не найдены в Vercel</h2>
-          <p>Убедитесь, что в <b>Vercel Settings ➔ Environment Variables</b> добавлены:</p>
-          <ul style="display:inline-block; text-align:left;">
-            <li><code>FATSECRET_CLIENT_ID</code> (Consumer Key)</li>
-            <li><code>FATSECRET_CLIENT_SECRET</code> (Consumer Secret)</li>
-          </ul>
-          <p>И после добавления нажат <b>Redeploy</b>.</p>
+          <p>Проверьте переменные <b>FATSECRET_CLIENT_ID</b> и <b>FATSECRET_CLIENT_SECRET</b> в настройках Vercel.</p>
         </div>
       `);
     }
 
     try {
-      // Step 1: Request unauthorized token from FatSecret
+      // Step 1: Request temporary token from FatSecret
       const requestTokenUrl = 'https://www.fatsecret.com/oauth/request_token';
       const nonce = crypto.randomBytes(16).toString('hex');
       const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -75,17 +80,19 @@ module.exports = async (req, res) => {
       const response = await axios.get(requestTokenUrl, {
         params: oauthParams,
         timeout: 8000,
+        responseType: 'text',
       });
 
-      const responseParams = new URLSearchParams(response.data);
+      const responseText = response.data || '';
+      const responseParams = new URLSearchParams(responseText);
       const reqToken = responseParams.get('oauth_token');
       const reqSecret = responseParams.get('oauth_token_secret');
 
       if (!reqToken) {
-        throw new Error('Ответ от FatSecret не содержит oauth_token: ' + response.data);
+        throw new Error(`FatSecret response did not contain token: ${responseText}`);
       }
 
-      // Save temporary secret in DB linked to userId and reqToken
+      // Save temporary token secret in DB
       await setUserServiceData(userId, 'fatsecret_temp', {
         oauth_token: reqToken,
         oauth_token_secret: reqSecret,
@@ -95,15 +102,32 @@ module.exports = async (req, res) => {
       const authorizeUrl = `https://www.fatsecret.com/oauth/authorize?oauth_token=${encodeURIComponent(reqToken)}`;
       return res.redirect(authorizeUrl);
     } catch (err) {
-      const errDetails = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
-      console.error('FatSecret OAuth Start error:', errDetails);
+      const rawData = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
+      const safeError = escapeHtml(rawData);
+      console.error('FatSecret OAuth Start error:', rawData);
+
       res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(`
-        <div style="font-family:sans-serif; text-align:center; padding:40px;">
-          <h2>❌ Ошибка ответа FatSecret</h2>
-          <pre style="background:#f1f5f9; padding:15px; border-radius:8px; display:inline-block; text-align:left;">${errDetails}</pre>
-          <p>Проверьте, что в <b>FATSECRET_CLIENT_ID</b> и <b>FATSECRET_CLIENT_SECRET</b> вставлены именно <b>Consumer Key</b> и <b>Consumer Secret</b> из раздела OAuth 1.0 на platform.fatsecret.com.</p>
-        </div>
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Ошибка FatSecret</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 24px; text-align: center; background: #0f172a; color: #fff; }
+            .box { background: #1e293b; padding: 24px; border-radius: 12px; max-width: 480px; margin: 0 auto; }
+            pre { background: #334155; padding: 12px; border-radius: 8px; color: #f87171; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 13px; text-align: left; }
+          </style>
+        </head>
+        <body>
+          <div class="box">
+            <h2>❌ Ответ сервера FatSecret:</h2>
+            <pre>${safeError}</pre>
+            <p style="color:#94a3b8; font-size:14px;">Проверьте, что в <b>FATSECRET_CLIENT_ID</b> и <b>FATSECRET_CLIENT_SECRET</b> в Vercel вставлены Consumer Key и Consumer Secret из раздела OAuth 1.0.</p>
+          </div>
+        </body>
+        </html>
       `);
     }
   }
@@ -118,8 +142,8 @@ module.exports = async (req, res) => {
     }
 
     try {
-      const clientId = config.fatsecret.clientId.trim();
-      const clientSecret = config.fatsecret.clientSecret.trim();
+      const clientId = (config.fatsecret.clientId || '').trim();
+      const clientSecret = (config.fatsecret.clientSecret || '').trim();
 
       // Exchange request token for access token
       const accessTokenUrl = 'https://www.fatsecret.com/oauth/access_token';
@@ -141,6 +165,7 @@ module.exports = async (req, res) => {
       const response = await axios.get(accessTokenUrl, {
         params: oauthParams,
         timeout: 8000,
+        responseType: 'text',
       });
 
       const responseParams = new URLSearchParams(response.data);
@@ -187,12 +212,12 @@ module.exports = async (req, res) => {
         </html>
       `);
     } catch (err) {
-      console.error('FatSecret Access Token error:', err.response?.data || err.message);
+      const rawData = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
       res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(`
         <div style="font-family:sans-serif; text-align:center; padding:50px;">
           <h1>❌ Ошибка авторизации FatSecret</h1>
-          <p>${err.response?.data || err.message}</p>
+          <pre>${escapeHtml(rawData)}</pre>
         </div>
       `);
     }
