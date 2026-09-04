@@ -2,9 +2,6 @@ const axios = require('axios');
 const config = require('../config');
 const { getUserServiceData, setUserServiceData } = require('./db');
 
-let cachedGoogleToken = null;
-let googleTokenExpiresAt = 0;
-
 /**
  * Returns exact start of today (00:00:00.000) in milliseconds for the user timezone
  */
@@ -79,9 +76,7 @@ async function getCaloriesBurnedToday(userId = null) {
 
     const requestBody = {
       aggregateBy: [
-        {
-          dataTypeName: 'com.google.calories.expended',
-        },
+        { dataTypeName: 'com.google.calories.expended' },
       ],
       startTimeMillis,
       endTimeMillis,
@@ -98,7 +93,6 @@ async function getCaloriesBurnedToday(userId = null) {
     let totalBurned = 0;
     const buckets = response.data?.bucket || [];
 
-    // If response is bucketed or direct dataset
     if (buckets.length > 0) {
       for (const bucket of buckets) {
         const datasets = bucket.dataset || [];
@@ -108,15 +102,6 @@ async function getCaloriesBurnedToday(userId = null) {
               if (typeof val.fpVal === 'number') totalBurned += val.fpVal;
               else if (typeof val.intVal === 'number') totalBurned += val.intVal;
             }
-          }
-        }
-      }
-    } else if (response.data?.dataset) {
-      for (const dataset of response.data.dataset) {
-        for (const point of dataset.point || []) {
-          for (const val of point.value || []) {
-            if (typeof val.fpVal === 'number') totalBurned += val.fpVal;
-            else if (typeof val.intVal === 'number') totalBurned += val.intVal;
           }
         }
       }
@@ -136,8 +121,74 @@ async function getCaloriesBurnedToday(userId = null) {
   }
 }
 
+/**
+ * Fetches total consumed calories for today synced into Google Fit from FatSecret / Health Connect
+ * @param {string|number} [userId] Telegram user ID
+ * @returns {Promise<{ calories: number, success: boolean, error?: string }>}
+ */
+async function getCaloriesConsumedFromGoogleFit(userId = null) {
+  try {
+    const accessToken = await getGoogleAccessToken(userId);
+    const startTimeMillis = getStartOfDayMillis();
+    const endTimeMillis = Date.now();
+
+    const requestBody = {
+      aggregateBy: [
+        { dataTypeName: 'com.google.nutrition' },
+        { dataTypeName: 'com.google.calories.consumed' },
+      ],
+      startTimeMillis,
+      endTimeMillis,
+    };
+
+    const response = await axios.post(config.googleFit.fitnessApiUrl, requestBody, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 8000,
+    });
+
+    let totalConsumed = 0;
+    const buckets = response.data?.bucket || [];
+
+    for (const bucket of buckets) {
+      for (const dataset of bucket.dataset || []) {
+        for (const point of dataset.point || []) {
+          for (const val of point.value || []) {
+            // For com.google.nutrition, calories is in mapVal with key 'calories'
+            if (val.mapVal) {
+              for (const entry of val.mapVal) {
+                if (entry.key === 'calories' && typeof entry.value?.fpVal === 'number') {
+                  totalConsumed += entry.value.fpVal;
+                }
+              }
+            } else if (typeof val.fpVal === 'number') {
+              totalConsumed += val.fpVal;
+            } else if (typeof val.intVal === 'number') {
+              totalConsumed += val.intVal;
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      calories: Math.round(totalConsumed),
+      success: true,
+    };
+  } catch (error) {
+    return {
+      calories: 0,
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
 module.exports = {
   getCaloriesBurnedToday,
+  getCaloriesConsumedFromGoogleFit,
   getStartOfDayMillis,
   getGoogleAccessToken,
 };
