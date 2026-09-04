@@ -1,7 +1,7 @@
 const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./googlefit');
 
 /**
- * Calculates energy balance and formats output message as a Telegram monospace table card with blockquote
+ * Calculates energy balance and formats output message
  * @param {number} consumed - Consumed calories (Inflow)
  * @param {number} burned - Burned calories (Outflow)
  * @returns {string} Formatted telegram markdown message
@@ -27,18 +27,15 @@ function formatEnergyBalance(consumed, burned) {
   const diffStr = `${formattedDiff}`.padStart(10, ' ');
 
   const message = [
-    `📊 *Энергетический баланс за сегодня*`,
+    `📊 *Энергетический баланс за сегодня:*`,
     ``,
-    `\`\`\``,
     `┌───────────────┬────────────┐`,
-    `│ Параметр      │ Значение   │`,
-    `├───────────────┼────────────┤`,
     `│ 📥 Приход     │ ${consumedStr} │`,
     `│ 📤 Расход     │ ${burnedStr} │`,
     `├───────────────┼────────────┤`,
     `│ ⚖️ Итог       │ ${diffStr} │`,
     `└───────────────┴────────────┘`,
-    `\`\`\``,
+    ``,
     `> ${statusText}`,
   ].join('\n');
 
