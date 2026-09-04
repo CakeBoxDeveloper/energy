@@ -1,0 +1,20 @@
+{
+  "name": "telegram-energy-balance-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot hosted on Vercel calculating daily energy balance from FatSecret and Google Fit",
+  "main": "api/webhook.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/local.js",
+    "test": "node test/balance.test.js && node test/integration.test.js",
+    "get-google-token": "node scripts/get-google-token.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
