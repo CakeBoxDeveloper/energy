@@ -1,4 +1,4 @@
-const { Bot, Keyboard } = require('grammy');
+const { Bot } = require('grammy');
 const config = require('./config');
 const { getDailyEnergyBalanceReport, formatEnergyBalance } = require('./services/balance');
 const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./services/googlefit');
@@ -22,28 +22,39 @@ function inlineKb(rows) {
 
 // ─── Bottom Reply Keyboard ────────────────────────────────────────────────────
 async function buildPersistentKeyboard(userId, balanceSummary = null) {
-  const keyboard = new Keyboard();
-
   const googleData = await getUserServiceData(userId, 'google');
   const isGoogleConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
 
   let balanceBtnText = '📊 Показать баланс';
+  let balanceStyle = undefined;
+
   if (balanceSummary) {
     const { diff } = balanceSummary;
     if (diff < 0) {
-      balanceBtnText = `⚖️ Баланс: ${diff} ккал 🟢 (Дефицит)`;
+      balanceBtnText = `⚖️ Баланс (${diff} ккал) 🟢 Дефицит`;
+      balanceStyle = 'success';
     } else if (diff > 0) {
-      balanceBtnText = `⚖️ Баланс: +${diff} ккал 🔴 (Профицит)`;
+      balanceBtnText = `⚖️ Баланс (+${diff} ккал) 🔴 Профицит`;
+      balanceStyle = 'danger';
     } else {
-      balanceBtnText = `⚖️ Баланс: 0 ккал ⚪ (В норме)`;
+      balanceBtnText = `⚖️ Баланс (0 ккал) ⚪ Норма`;
     }
   }
 
-  keyboard.text(balanceBtnText).row();
-
   const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔵 Подключить Google Fit';
-  keyboard.text(googleBtnText).text('🔄 Обновить баланс').row();
-  keyboard.resized().persistent();
+
+  // ReplyKeyboardMarkup JSON with native style support
+  const keyboard = {
+    keyboard: [
+      [{ text: balanceBtnText, ...(balanceStyle ? { style: balanceStyle } : {}) }],
+      [
+        { text: googleBtnText, ...(isGoogleConnected ? { style: 'success' } : { style: 'primary' }) },
+        { text: '🔄 Обновить баланс' }
+      ]
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
 
   return keyboard;
 }
@@ -93,15 +104,21 @@ async function sendBalanceReport(ctx) {
       diff < 0 ? `🟢 Дефицит: ${diff} ккал` :
       diff > 0 ? `🔴 Профицит: +${diff} ккал` :
                  `⚪ Баланс: 0 ккал`;
-    const balanceBtnStyle = diff < 0 ? 'success' : diff > 0 ? 'destructive' : undefined;
+    const balanceBtnStyle = diff < 0 ? 'success' : diff > 0 ? 'danger' : undefined;
 
     const replyMarkup = inlineKb([
       [btn(balanceLabel, { callback_data: 'refresh_balance_inline', style: balanceBtnStyle })],
     ]);
 
+    // Send report with colored inline button
     await ctx.reply(message, {
       parse_mode: 'HTML',
       reply_markup: replyMarkup,
+    });
+
+    // Update bottom persistent keyboard with fresh balance & colors
+    await ctx.reply('Клавиатура обновлена 👇', {
+      reply_markup: keyboard,
     });
   } catch (error) {
     console.error('Error calculating balance:', error);
