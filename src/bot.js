@@ -98,6 +98,7 @@ async function sendBalanceReport(ctx) {
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
     await ctx.reply(message, {
+      parse_mode: 'Markdown',
       reply_markup: keyboard,
     });
   } catch (error) {
