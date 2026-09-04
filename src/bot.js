@@ -47,31 +47,22 @@ function inlineKb(rows) {
  * @returns {{ text: string, reply_markup: object }}
  */
 function buildPinnedMessageContent(isGoogleConnected, balanceData = null) {
+  const pinnedText = `Energy Tracker by MSE`;
+
   if (!isGoogleConnected) {
     return {
-      text:
-        `📊 <b>Энергетический баланс</b>\n\n` +
-        `<blockquote>⚙️ Для отображения баланса необходимо подключить <b>Google Fit</b>.\n` +
-        `Нажмите кнопку «🔵 Подключить Google Fit» на клавиатуре ниже.</blockquote>`,
+      text: pinnedText,
       reply_markup: inlineKb([
-        [btn('⚡ Баланс энергии: — ккал', { callback_data: 'pinned_hint' })],
+        [btn('⚡ Баланс энергии: подключите Google Fit', { callback_data: 'pinned_hint' })],
       ]),
     };
   }
 
-  const { consumed = 0, burned = 0, diff = 0 } = balanceData || {};
-  let sign = diff > 0 ? '+' : '';
-  let statusIcon = diff > 0 ? '🔴' : diff < 0 ? '🟢' : '⚪';
-  let statusLabel = diff > 0 ? 'профицит' : diff < 0 ? 'дефицит' : 'норма';
+  const { diff = 0 } = balanceData || {};
+  const sign = diff > 0 ? '+' : '';
 
   return {
-    text:
-      `📊 <b>Энергетический баланс</b>\n\n` +
-      `<code>Приход:  ${String(consumed + ' ккал').padStart(11)}\n` +
-      `Расход:  ${String(burned + ' ккал').padStart(11)}\n` +
-      `──────────────────────\n` +
-      `Итог:    ${String(sign + diff + ' ккал').padStart(11)}</code>\n\n` +
-      `<blockquote>${statusIcon} ${statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1)}: <b>${sign}${diff} ккал</b></blockquote>`,
+    text: pinnedText,
     reply_markup: inlineKb([
       [btn(`⚡ Баланс энергии: ${sign}${diff} ккал`, { callback_data: 'pinned_hint' })],
     ]),
@@ -163,6 +154,7 @@ async function sendReplaceMessage(ctx, text, extra = {}) {
 
   // 1. Get old message ID from storage
   const oldMsgId = await getLastMessageId(userId);
+  const pinnedMsgId = await getPinnedMessageId(userId);
 
   // 2. Send the new message with reply_markup attached directly
   const newMsg = await ctx.reply(text, extra);
@@ -173,7 +165,8 @@ async function sendReplaceMessage(ctx, text, extra = {}) {
   }
 
   // 4. AFTER new message is visible, delete previous bot message
-  if (oldMsgId) {
+  //    but NEVER delete the pinned message
+  if (oldMsgId && Number(oldMsgId) !== Number(pinnedMsgId)) {
     try {
       await ctx.api.deleteMessage(ctx.chat.id, Number(oldMsgId));
     } catch (_) {}
