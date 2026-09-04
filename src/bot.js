@@ -167,46 +167,30 @@ async function sendGoogleFitStatus(ctx) {
 • <b>Приход калорий:</b> из дневника питания (FatSecret)
 • <b>Последнее обновление:</b> ${lastSync}
 
-Чтобы сменить Google-аккаунт, нажмите красную кнопку отключения:`;
+Чтобы отключить Google-аккаунт, нажмите красную кнопку:`;
 
-    // 🟢 green "account" button + 🔴 red "disconnect" button
     const inlineMarkup = inlineKb([
-      [btn(`🟢 Аккаунт: ${email}`, { callback_data: 'account_active_info', style: 'success' })],
-      [btn('🔴 Отключить Google Fit',  { callback_data: 'disconnect_google', style: 'danger' })],
+      [btn('🔴 Отключить Google Fit', { callback_data: 'disconnect_google', style: 'danger' })],
     ]);
 
-    // Send message with inline buttons
+    // Send the message with reply keyboard directly attached so it NEVER vanishes
     await sendReplaceMessage(ctx, text, {
       parse_mode: 'HTML',
-      reply_markup: inlineMarkup,
+      reply_markup: keyboard,
     });
-
-    // Ensure persistent reply keyboard remains visible
-    await ctx.reply('👇', { reply_markup: keyboard }).then(msg => {
-      ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-    }).catch(() => {});
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
 
     const text =
 `⌚ <b>Google Fit не подключен</b>
 
-Нажмите синюю кнопку ниже для авторизации под вашим Google-аккаунтом:`;
-
-    // 🔵 blue "connect" button
-    const inlineMarkup = inlineKb([
-      [btn('🔵 Войти через Google', { url: authUrl, style: 'primary' })],
-    ]);
+Нажмите ссылку ниже для авторизации под вашим Google-аккаунтом:
+<a href="${authUrl}">👉 <b>Войти через Google</b></a>`;
 
     await sendReplaceMessage(ctx, text, {
       parse_mode: 'HTML',
-      reply_markup: inlineMarkup,
+      reply_markup: keyboard,
     });
-
-    // Ensure persistent reply keyboard remains visible
-    await ctx.reply('👇', { reply_markup: keyboard }).then(msg => {
-      ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-    }).catch(() => {});
   }
 }
 
