@@ -165,18 +165,19 @@ async function sendGoogleFitStatus(ctx) {
 
 • <b>Расход калорий:</b> с часов (Amazfit / Zepp)
 • <b>Приход калорий:</b> из дневника питания (FatSecret)
-• <b>Последнее обновление:</b> ${lastSync}
+• <b>Последнее обновление:</b> ${lastSync}`;
 
-Чтобы отключить Google-аккаунт, нажмите красную кнопку:`;
-
+    // Inline buttons under the message: Back (blue) and Disconnect (red)
     const inlineMarkup = inlineKb([
-      [btn('🔴 Отключить Google Fit', { callback_data: 'disconnect_google', style: 'danger' })],
+      [
+        btn('← Назад', { callback_data: 'back_to_balance', style: 'primary' }),
+        btn('🔴 Выйти из аккаунта', { callback_data: 'disconnect_google', style: 'danger' }),
+      ],
     ]);
 
-    // Send the message with reply keyboard directly attached so it NEVER vanishes
     await sendReplaceMessage(ctx, text, {
       parse_mode: 'HTML',
-      reply_markup: keyboard,
+      reply_markup: inlineMarkup,
     });
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
@@ -184,12 +185,16 @@ async function sendGoogleFitStatus(ctx) {
     const text =
 `⌚ <b>Google Fit не подключен</b>
 
-Нажмите ссылку ниже для авторизации под вашим Google-аккаунтом:
-<a href="${authUrl}">👉 <b>Войти через Google</b></a>`;
+Нажмите синюю кнопку ниже для авторизации под вашим Google-аккаунтом:`;
+
+    const inlineMarkup = inlineKb([
+      [btn('🔵 Войти через Google', { url: authUrl, style: 'primary' })],
+      [btn('← Назад к балансу', { callback_data: 'back_to_balance' })],
+    ]);
 
     await sendReplaceMessage(ctx, text, {
       parse_mode: 'HTML',
-      reply_markup: keyboard,
+      reply_markup: inlineMarkup,
     });
   }
 }
@@ -199,6 +204,11 @@ bot.command(['balance', 'today'], sendBalanceReport);
 bot.command('auth', sendGoogleFitStatus);
 
 // Inline callbacks
+bot.callbackQuery('back_to_balance', async (ctx) => {
+  await ctx.answerCallbackQuery();
+  return sendBalanceReport(ctx);
+});
+
 bot.callbackQuery('refresh_balance_inline', async (ctx) => {
   await ctx.answerCallbackQuery({ text: '🔄 Баланс актуален' });
 });
