@@ -135,7 +135,7 @@ async function sendGoogleFitStatus(ctx) {
     // 🟢 green "account" button + 🔴 red "disconnect" button
     const replyMarkup = inlineKb([
       [btn(`🟢 Аккаунт: ${email}`, { callback_data: 'account_active_info', style: 'success' })],
-      [btn('🔴 Отключить Google Fit',  { callback_data: 'disconnect_google', style: 'destructive' })],
+      [btn('🔴 Отключить Google Fit',  { callback_data: 'disconnect_google', style: 'danger' })],
     ]);
 
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: replyMarkup });
