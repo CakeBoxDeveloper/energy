@@ -111,6 +111,8 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
     try {
       await ctx.api.deleteMessage(ctx.chat.id, Number(existingId));
     } catch (_) {}
+    // Clear stale ID so next run starts fresh
+    await setPinnedMessageId(userId, null);
   }
 
   // Create a fresh pinned message and pin it
@@ -124,7 +126,9 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
     await ctx.api.pinChatMessage(ctx.chat.id, msg.message_id, {
       disable_notification: true,
     });
-  } catch (_) {}
+  } catch (e) {
+    console.warn('pinChatMessage failed:', e?.description || e?.message || e);
+  }
 }
 
 // ─── Bottom Reply Keyboard (1 button per row, Обновить is blue at very bottom)
@@ -319,6 +323,25 @@ bot.on('message:pinned_message', async (ctx) => {
 // ─── Command & text handlers ──────────────────────────────────────────────────
 bot.command(['balance', 'today'], sendBalanceReport);
 bot.command('auth', sendGoogleFitStatus);
+
+// Debug: force-reset the pinned message (creates a new one on next /start)
+bot.command('resetpin', async (ctx) => {
+  await cleanUserMessage(ctx);
+  await setPinnedMessageId(ctx.from.id, null);
+  await sendBalanceReport(ctx);
+});
+
+// Full reset — simulates first-ever message: clears all stored IDs and recreates pinned
+bot.command('refresh', async (ctx) => {
+  await cleanUserMessage(ctx);
+  const userId = ctx.from.id;
+
+  // Clear both stored message IDs so everything starts fresh
+  await setPinnedMessageId(userId, null);
+  await setLastMessageId(userId, null);
+
+  await sendBalanceReport(ctx);
+});
 
 // Inline callbacks
 bot.callbackQuery('pinned_hint', async (ctx) => {
