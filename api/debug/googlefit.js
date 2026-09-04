@@ -3,12 +3,25 @@ const url = require('url');
 const config = require('../../src/config');
 const { getGoogleAccessToken, getStartOfDayMillis } = require('../../src/services/googlefit');
 
+const { getRedis } = require('../../src/services/db');
+
 module.exports = async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
-  const userId = parsedUrl.query.userId || req.query?.userId;
+  let userId = parsedUrl.query.userId || req.query?.userId;
 
   try {
+    if (!userId) {
+      const redis = getRedis();
+      if (redis) {
+        const keys = await redis.keys('user:*:google');
+        if (keys && keys.length > 0) {
+          userId = keys[0].split(':')[1];
+        }
+      }
+    }
+
     const accessToken = await getGoogleAccessToken(userId);
+
     const startTimeMillis = getStartOfDayMillis();
     const endTimeMillis = Date.now();
     const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
