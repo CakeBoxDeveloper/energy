@@ -30,18 +30,29 @@ module.exports = async (req, res) => {
 
   const callbackUrl = `${config.app.appUrl}/api/auth/fatsecret/callback`;
 
-  // 1. START OAUTH 1.0a / 2.0 FLOW: /api/auth/fatsecret/start?userId=123456
+  // 1. START OAUTH 1.0a FLOW: /api/auth/fatsecret/start?userId=123456
   if (pathname.includes('/start') || query.action === 'start') {
     const userId = query.userId;
     if (!userId) {
       return res.status(400).send('<h1>Ошибка: Не передан Telegram User ID</h1>');
     }
 
-    const clientId = config.fatsecret.clientId;
-    const clientSecret = config.fatsecret.clientSecret;
+    const clientId = config.fatsecret.clientId.trim();
+    const clientSecret = config.fatsecret.clientSecret.trim();
 
     if (!clientId || !clientSecret) {
-      return res.status(500).send('<h1>Ошибка: FATSECRET_CLIENT_ID или FATSECRET_CLIENT_SECRET не настроены на Vercel.</h1>');
+      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`
+        <div style="font-family:sans-serif; text-align:center; padding:40px;">
+          <h2>⚠️ Ключи FatSecret не найдены в Vercel</h2>
+          <p>Убедитесь, что в <b>Vercel Settings ➔ Environment Variables</b> добавлены:</p>
+          <ul style="display:inline-block; text-align:left;">
+            <li><code>FATSECRET_CLIENT_ID</code> (Consumer Key)</li>
+            <li><code>FATSECRET_CLIENT_SECRET</code> (Consumer Secret)</li>
+          </ul>
+          <p>И после добавления нажат <b>Redeploy</b>.</p>
+        </div>
+      `);
     }
 
     try {
@@ -71,7 +82,7 @@ module.exports = async (req, res) => {
       const reqSecret = responseParams.get('oauth_token_secret');
 
       if (!reqToken) {
-        throw new Error('Не удалось получить временный токен FatSecret: ' + response.data);
+        throw new Error('Ответ от FatSecret не содержит oauth_token: ' + response.data);
       }
 
       // Save temporary secret in DB linked to userId and reqToken
@@ -84,13 +95,14 @@ module.exports = async (req, res) => {
       const authorizeUrl = `https://www.fatsecret.com/oauth/authorize?oauth_token=${encodeURIComponent(reqToken)}`;
       return res.redirect(authorizeUrl);
     } catch (err) {
-      console.error('FatSecret OAuth Start error:', err.response?.data || err.message);
+      const errDetails = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
+      console.error('FatSecret OAuth Start error:', errDetails);
       res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(`
-        <div style="font-family:sans-serif; text-align:center; padding:50px;">
-          <h1>❌ Ошибка подключения FatSecret</h1>
-          <p>${err.response?.data || err.message}</p>
-          <p>Проверьте корректность FATSECRET_CLIENT_ID и FATSECRET_CLIENT_SECRET в переменных Vercel.</p>
+        <div style="font-family:sans-serif; text-align:center; padding:40px;">
+          <h2>❌ Ошибка ответа FatSecret</h2>
+          <pre style="background:#f1f5f9; padding:15px; border-radius:8px; display:inline-block; text-align:left;">${errDetails}</pre>
+          <p>Проверьте, что в <b>FATSECRET_CLIENT_ID</b> и <b>FATSECRET_CLIENT_SECRET</b> вставлены именно <b>Consumer Key</b> и <b>Consumer Secret</b> из раздела OAuth 1.0 на platform.fatsecret.com.</p>
         </div>
       `);
     }
@@ -106,8 +118,8 @@ module.exports = async (req, res) => {
     }
 
     try {
-      const clientId = config.fatsecret.clientId;
-      const clientSecret = config.fatsecret.clientSecret;
+      const clientId = config.fatsecret.clientId.trim();
+      const clientSecret = config.fatsecret.clientSecret.trim();
 
       // Exchange request token for access token
       const accessTokenUrl = 'https://www.fatsecret.com/oauth/access_token';
@@ -124,7 +136,6 @@ module.exports = async (req, res) => {
         oauth_version: '1.0',
       };
 
-      // In FatSecret OAuth 1.0a, token secret is empty string or temporary token secret
       oauthParams.oauth_signature = generateOAuthSignature('GET', accessTokenUrl, oauthParams, clientSecret, '');
 
       const response = await axios.get(accessTokenUrl, {
@@ -140,7 +151,6 @@ module.exports = async (req, res) => {
         throw new Error('Не удалось получить Access Token FatSecret: ' + response.data);
       }
 
-      // If state or userId wasn't in callback query, save user credentials in global/session
       const userId = query.userId || query.state || 'default_user';
 
       await setUserServiceData(userId, 'fatsecret', {
