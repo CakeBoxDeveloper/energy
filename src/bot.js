@@ -47,24 +47,35 @@ function inlineKb(rows) {
  * @returns {{ text: string, reply_markup: object }}
  */
 function buildPinnedMessageContent(isGoogleConnected, balanceData = null) {
-  const pinnedText = `Energy Tracker by MSE`;
+  const pinnedText = `Баланс энергии`;
 
   if (!isGoogleConnected) {
     return {
       text: pinnedText,
       reply_markup: inlineKb([
-        [btn('⚡ Баланс энергии: подключите Google Fit', { callback_data: 'pinned_hint' })],
+        [btn('⚙️ Подключите Google Fit', { callback_data: 'pinned_hint' })],
       ]),
     };
   }
 
   const { diff = 0 } = balanceData || {};
-  const sign = diff > 0 ? '+' : '';
+
+  let btnLabel, btnStyle;
+  if (diff > 0) {
+    btnLabel = `❌ +${diff} ккал`;
+    btnStyle = 'danger';
+  } else if (diff < 0) {
+    btnLabel = `✅ ${diff} ккал`;
+    btnStyle = 'success';
+  } else {
+    btnLabel = `⚡ 0 ккал`;
+    btnStyle = undefined;
+  }
 
   return {
     text: pinnedText,
     reply_markup: inlineKb([
-      [btn(`⚡ Баланс энергии: ${sign}${diff} ккал`, { callback_data: 'pinned_hint' })],
+      [btn(btnLabel, { callback_data: 'pinned_hint', style: btnStyle })],
     ]),
   };
 }
@@ -83,7 +94,7 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
   const existingId = await getPinnedMessageId(userId);
 
   if (existingId) {
-    // Try to edit the existing pinned message
+    // Try to edit the existing pinned message — no new message, no duplicate
     try {
       await ctx.api.editMessageText(ctx.chat.id, Number(existingId), text, {
         parse_mode: 'HTML',
@@ -91,7 +102,7 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
       });
       return; // successfully updated — done
     } catch (e) {
-      // Message was deleted by user or Telegram — fall through to create a new one
+      // Message was deleted by user — fall through to create a new one
     }
   }
 
@@ -106,9 +117,7 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
     await ctx.api.pinChatMessage(ctx.chat.id, msg.message_id, {
       disable_notification: true,
     });
-  } catch (_) {
-    // Pinning may fail in private chats without admin rights — silently ignore
-  }
+  } catch (_) {}
 }
 
 // ─── Bottom Reply Keyboard (1 button per row, Обновить is blue at very bottom)
@@ -292,6 +301,13 @@ async function sendGoogleFitStatus(ctx) {
     });
   }
 }
+
+// ─── Auto-delete "X pinned a message" service messages ───────────────────────
+bot.on('message:pinned_message', async (ctx) => {
+  try {
+    await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id);
+  } catch (_) {}
+});
 
 // ─── Command & text handlers ──────────────────────────────────────────────────
 bot.command(['balance', 'today'], sendBalanceReport);
