@@ -1,4 +1,4 @@
-const { Bot, Keyboard, InlineKeyboard } = require('grammy');
+const { Bot, Keyboard } = require('grammy');
 const config = require('./config');
 const { getDailyEnergyBalanceReport, formatEnergyBalance } = require('./services/balance');
 const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./services/googlefit');
@@ -7,9 +7,20 @@ const { getUserServiceData, deleteUserServiceData } = require('./services/db');
 const botToken = config.telegram.botToken || '1234567890:AAFakeTokenForModuleInitBeforeEnvConfigured';
 const bot = new Bot(botToken);
 
-/**
- * Builds the bottom Reply Keyboard
- */
+// ─── Raw inline keyboard helpers (like Barokko) ───────────────────────────────
+function btn(text, { callback_data, url, style } = {}) {
+  const b = { text };
+  if (callback_data) b.callback_data = callback_data;
+  if (url)           b.url = url;
+  if (style)         b.style = style;
+  return b;
+}
+
+function inlineKb(rows) {
+  return { inline_keyboard: rows };
+}
+
+// ─── Bottom Reply Keyboard ────────────────────────────────────────────────────
 async function buildPersistentKeyboard(userId, balanceSummary = null) {
   const keyboard = new Keyboard();
 
@@ -30,19 +41,14 @@ async function buildPersistentKeyboard(userId, balanceSummary = null) {
 
   keyboard.text(balanceBtnText).row();
 
-  // Bottom row
-  const googleBtnText = isGoogleConnected ? '🟢 Google Fit (Подключен)' : '🔵 Подключить Google Fit';
-
-  keyboard
-    .text(googleBtnText)
-    .text('🔄 Обновить баланс')
-    .row();
-
+  const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔵 Подключить Google Fit';
+  keyboard.text(googleBtnText).text('🔄 Обновить баланс').row();
   keyboard.resized().persistent();
+
   return keyboard;
 }
 
-// Handle /start, /help, /menu commands
+// ─── /start, /help, /menu ────────────────────────────────────────────────────
 bot.command(['start', 'help', 'menu'], async (ctx) => {
   const userId = ctx.from.id;
   const keyboard = await buildPersistentKeyboard(userId);
@@ -59,7 +65,7 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
   });
 });
 
-// Handle balance calculation
+// ─── Balance report ───────────────────────────────────────────────────────────
 async function sendBalanceReport(ctx) {
   const userId = ctx.from.id;
 
@@ -72,10 +78,7 @@ async function sendBalanceReport(ctx) {
     if (!burnedRes.success) {
       const report = await getDailyEnergyBalanceReport(userId);
       const keyboard = await buildPersistentKeyboard(userId);
-      return ctx.reply(report.text, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
+      return ctx.reply(report.text, { parse_mode: 'HTML', reply_markup: keyboard });
     }
 
     const consumed = consumedRes.success ? consumedRes.calories : 0;
@@ -85,37 +88,37 @@ async function sendBalanceReport(ctx) {
     const message = formatEnergyBalance(consumed, burned);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
-    // Inline button attached to the balance message with color styling
-    const inlineButtons = {
-      inline_keyboard: [
-        [
-          {
-            text: diff < 0 ? `🟢 Дефицит: ${diff} ккал` : diff > 0 ? `🔴 Профицит: +${diff} ккал` : `⚪ Баланс: 0 ккал`,
-            callback_data: 'refresh_balance_inline',
-            style: diff < 0 ? 'success' : diff > 0 ? 'destructive' : 'primary',
-          },
-        ],
-      ],
-    };
+    // Colored inline button: green for deficit, red for surplus
+    const balanceLabel =
+      diff < 0 ? `🟢 Дефицит: ${diff} ккал` :
+      diff > 0 ? `🔴 Профицит: +${diff} ккал` :
+                 `⚪ Баланс: 0 ккал`;
+    const balanceBtnStyle = diff < 0 ? 'success' : diff > 0 ? 'destructive' : undefined;
+
+    const replyMarkup = inlineKb([
+      [btn(balanceLabel, { callback_data: 'refresh_balance_inline', style: balanceBtnStyle })],
+    ]);
 
     await ctx.reply(message, {
       parse_mode: 'HTML',
-      reply_markup: inlineButtons,
+      reply_markup: replyMarkup,
     });
   } catch (error) {
     console.error('Error calculating balance:', error);
-    await ctx.reply('❌ Произошла ошибка при расчете баланса: ' + (error.message || ''));
+    await ctx.reply('❌ Ошибка расчета баланса: ' + (error.message || ''));
   }
 }
 
-// Handle Google Fit button press
+// ─── Google Fit status ────────────────────────────────────────────────────────
 async function sendGoogleFitStatus(ctx) {
   const userId = ctx.from.id;
   const googleData = await getUserServiceData(userId, 'google');
   const isConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
 
   if (isConnected) {
-    const lastSync = googleData?.updated_at ? new Date(googleData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone }) : 'Ранее';
+    const lastSync = googleData?.updated_at
+      ? new Date(googleData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone })
+      : 'Ранее';
     const email = googleData?.email || 'slardaran@gmail.com';
 
     const text =
@@ -129,62 +132,35 @@ async function sendGoogleFitStatus(ctx) {
 
 Чтобы сменить Google-аккаунт, нажмите красную кнопку отключения:`;
 
-    // Red destructive disconnect button and green status button
-    const inlineKeyboard = {
-      inline_keyboard: [
-        [
-          {
-            text: '🟢 Аккаунт активен (slardaran@gmail.com)',
-            callback_data: 'account_active_info',
-            style: 'success',
-          },
-        ],
-        [
-          {
-            text: '🔴 Отключить Google Fit',
-            callback_data: 'disconnect_google',
-            style: 'destructive',
-          },
-        ],
-      ],
-    };
+    // 🟢 green "account" button + 🔴 red "disconnect" button
+    const replyMarkup = inlineKb([
+      [btn(`🟢 Аккаунт: ${email}`, { callback_data: 'account_active_info', style: 'success' })],
+      [btn('🔴 Отключить Google Fit',  { callback_data: 'disconnect_google', style: 'destructive' })],
+    ]);
 
-    await ctx.reply(text, {
-      parse_mode: 'HTML',
-      reply_markup: inlineKeyboard,
-    });
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: replyMarkup });
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
+
     const text =
 `⌚ <b>Google Fit не подключен</b>
 
 Нажмите синюю кнопку ниже для авторизации под вашим Google-аккаунтом:`;
 
-    // Blue primary connect button
-    const inlineKeyboard = {
-      inline_keyboard: [
-        [
-          {
-            text: '🔵 Войти через Google',
-            url: authUrl,
-            style: 'primary',
-          },
-        ],
-      ],
-    };
+    // 🔵 blue "connect" button
+    const replyMarkup = inlineKb([
+      [btn('🔵 Войти через Google', { url: authUrl, style: 'primary' })],
+    ]);
 
-    await ctx.reply(text, {
-      parse_mode: 'HTML',
-      reply_markup: inlineKeyboard,
-    });
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: replyMarkup });
   }
 }
 
-// Command & button handlers
+// ─── Command & text handlers ──────────────────────────────────────────────────
 bot.command(['balance', 'today'], sendBalanceReport);
 bot.command('auth', sendGoogleFitStatus);
 
-// Inline Callbacks
+// Inline callbacks
 bot.callbackQuery('refresh_balance_inline', async (ctx) => {
   await ctx.answerCallbackQuery({ text: '🔄 Баланс актуален' });
 });
@@ -204,7 +180,7 @@ bot.callbackQuery('disconnect_google', async (ctx) => {
   });
 });
 
-// Text message listener for bottom keyboard buttons
+// Bottom keyboard text listener
 bot.on('message:text', async (ctx) => {
   const text = ctx.message.text.trim();
 
