@@ -105,6 +105,31 @@ async function setLastMessageId(userId, messageId) {
   }
 }
 
+/**
+ * Get pinned status message ID for a user
+ */
+async function getPinnedMessageId(userId) {
+  const redis = getRedis();
+  const key = `user:${userId}:pinned_msg_id`;
+  if (redis) {
+    return await redis.get(key);
+  }
+  return memoryStore.get(key) || null;
+}
+
+/**
+ * Set pinned status message ID for a user
+ */
+async function setPinnedMessageId(userId, messageId) {
+  const redis = getRedis();
+  const key = `user:${userId}:pinned_msg_id`;
+  if (redis) {
+    await redis.set(key, messageId);
+  } else {
+    memoryStore.set(key, messageId);
+  }
+}
+
 module.exports = {
   getRedis,
   setUserServiceData,
@@ -112,4 +137,6 @@ module.exports = {
   deleteUserServiceData,
   getLastMessageId,
   setLastMessageId,
+  getPinnedMessageId,
+  setPinnedMessageId,
 };
