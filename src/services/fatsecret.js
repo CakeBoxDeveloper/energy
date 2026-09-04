@@ -13,10 +13,54 @@ function getFatSecretDateNumber(date = new Date()) {
   return Math.floor(diffTime / (1000 * 60 * 60 * 24));
 }
 
+const { getUserServiceData, setUserServiceData } = require('./db');
+
 /**
  * Retrieves an OAuth 2.0 access token for FatSecret API
  */
-async function getFatSecretAccessToken() {
+async function getFatSecretAccessToken(userId = null) {
+  // 1. Check user-specific token in Redis
+  if (userId) {
+    const userData = await getUserServiceData(userId, 'fatsecret');
+    if (userData) {
+      if (userData.access_token && (!userData.expires_at || Date.now() < userData.expires_at - 60000)) {
+        return userData.access_token;
+      }
+      // If expired and has refresh_token, refresh it
+      if (userData.refresh_token && config.fatsecret.clientId && config.fatsecret.clientSecret) {
+        try {
+          const credentials = Buffer.from(`${config.fatsecret.clientId}:${config.fatsecret.clientSecret}`).toString('base64');
+          const params = new URLSearchParams();
+          params.append('grant_type', 'refresh_token');
+          params.append('refresh_token', userData.refresh_token);
+
+          const refreshRes = await axios.post(config.fatsecret.tokenUrl, params.toString(), {
+            headers: {
+              'Authorization': `Basic ${credentials}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            timeout: 8000,
+          });
+
+          if (refreshRes.data && refreshRes.data.access_token) {
+            const newExpires = Date.now() + (refreshRes.data.expires_in || 86400) * 1000;
+            const updated = {
+              ...userData,
+              access_token: refreshRes.data.access_token,
+              refresh_token: refreshRes.data.refresh_token || userData.refresh_token,
+              expires_at: newExpires,
+            };
+            await setUserServiceData(userId, 'fatsecret', updated);
+            return updated.access_token;
+          }
+        } catch (err) {
+          console.error('Error refreshing FatSecret token for user:', userId, err.message);
+        }
+      }
+    }
+  }
+
+  // 2. Fallback to global config access token if provided
   if (config.fatsecret.accessToken) {
     return config.fatsecret.accessToken;
   }
@@ -28,7 +72,7 @@ async function getFatSecretAccessToken() {
   const { clientId, clientSecret, tokenUrl } = config.fatsecret;
 
   if (!clientId || !clientSecret) {
-    throw new Error('FatSecret API credentials (FATSECRET_CLIENT_ID / FATSECRET_CLIENT_SECRET) are not configured.');
+    throw new Error('Необходимо подключить FatSecret. Нажмите кнопку авторизации в боте.');
   }
 
   const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -56,11 +100,12 @@ async function getFatSecretAccessToken() {
 
 /**
  * Fetches total consumed calories for today from FatSecret API
+ * @param {string|number} [userId] Telegram user ID
  * @returns {Promise<{ calories: number, details: object }>}
  */
-async function getCaloriesConsumedToday() {
+async function getCaloriesConsumedToday(userId = null) {
   try {
-    const token = await getFatSecretAccessToken();
+    const token = await getFatSecretAccessToken(userId);
     const dateNumber = getFatSecretDateNumber();
 
     // Call FatSecret food_entries.get.v2

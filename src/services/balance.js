@@ -28,12 +28,13 @@ function formatEnergyBalance(consumed, burned) {
 
 /**
  * Fetches data from FatSecret and Google Fit, computes balance and generates output
+ * @param {string|number} [userId] Telegram user ID
  * @returns {Promise<{ text: string, success: boolean }>}
  */
-async function getDailyEnergyBalanceReport() {
+async function getDailyEnergyBalanceReport(userId = null) {
   const [consumedResult, burnedResult] = await Promise.all([
-    getCaloriesConsumedToday(),
-    getCaloriesBurnedToday(),
+    getCaloriesConsumedToday(userId),
+    getCaloriesBurnedToday(userId),
   ]);
 
   const errors = [];

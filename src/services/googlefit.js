@@ -14,18 +14,25 @@ function getStartOfDayMillis(timezone = config.app.timezone) {
   return startOfDay.getTime();
 }
 
+const { getUserServiceData, setUserServiceData } = require('./db');
+
 /**
  * Exchanges Google OAuth 2.0 refresh token for a fresh access token
  */
-async function getGoogleAccessToken() {
-  if (cachedGoogleToken && Date.now() < googleTokenExpiresAt - 60000) {
-    return cachedGoogleToken;
+async function getGoogleAccessToken(userId = null) {
+  let refreshToken = config.googleFit.refreshToken;
+
+  if (userId) {
+    const userData = await getUserServiceData(userId, 'google');
+    if (userData && userData.refresh_token) {
+      refreshToken = userData.refresh_token;
+    }
   }
 
-  const { clientId, clientSecret, refreshToken, tokenUrl } = config.googleFit;
+  const { clientId, clientSecret, tokenUrl } = config.googleFit;
 
   if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error('Google Fit credentials (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN) are not configured.');
+    throw new Error('Необходимо подключить Google Fit. Нажмите кнопку авторизации в боте.');
   }
 
   const response = await axios.post(tokenUrl, {
@@ -39,10 +46,7 @@ async function getGoogleAccessToken() {
   });
 
   if (response.data && response.data.access_token) {
-    cachedGoogleToken = response.data.access_token;
-    const expiresIn = response.data.expires_in || 3600;
-    googleTokenExpiresAt = Date.now() + expiresIn * 1000;
-    return cachedGoogleToken;
+    return response.data.access_token;
   }
 
   throw new Error('Failed to obtain Google Fit access token');
@@ -50,11 +54,12 @@ async function getGoogleAccessToken() {
 
 /**
  * Fetches total burned calories for today from Google Fit API (synced from Amazfit)
+ * @param {string|number} [userId] Telegram user ID
  * @returns {Promise<{ calories: number, success: boolean, error?: string }>}
  */
-async function getCaloriesBurnedToday() {
+async function getCaloriesBurnedToday(userId = null) {
   try {
-    const accessToken = await getGoogleAccessToken();
+    const accessToken = await getGoogleAccessToken(userId);
     const startTimeMillis = getStartOfDayMillis();
     const endTimeMillis = Date.now();
 

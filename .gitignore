@@ -1,0 +1,20 @@
+# Dependencies (Vercel installs them automatically during build)
+node_modules/
+
+# Environment variables & secrets (NEVER commit your tokens/keys!)
+.env
+.env.local
+.env.*.local
+
+# Vercel deployment cache
+.vercel/
+
+# Logs & temp files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db

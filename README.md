@@ -1,112 +1,62 @@
-# 🤖 Telegram Energy Balance Bot (Vercel Serverless)
+# 🤖 Telegram Energy Balance Bot (Vercel + Redis + 1-Click Auth)
 
-Телеграм-бот, рассчитывающий суточный энергетический баланс:
-* 📥 **Приход калорий**: получение данных из дневника питания **FatSecret API**.
-* 📤 **Расход калорий**: получение суммарно сожженных калорий из **Google Fit / Health Connect API** (синхронизируется с браслетами/часами Amazfit через приложение Zepp).
-* ⚖️ **Баланс**: расчет по формуле `Баланс = Приход - Расход` с явным знаком `+` (профицит) или `-` (дефицит).
+Телеграм-бот с **1-клик авторизацией через браузер** и хранилищем сессий в **Upstash Redis / Vercel KV**:
+* 📥 **Приход калорий**: дневник питания **FatSecret API**
+* 📤 **Расход калорий**: **Google Fit / Health Connect API** (Amazfit)
+* ⚖️ **Баланс**: `Баланс = Приход - Расход` со знаком `+` (профицит) или `-` (дефицит)
 
-Формат ответа бота строго соответствует спецификации:
+---
+
+## ⚡ Как теперь работает авторизация
+
+1. Пользователь запускает бота (`/start` или `/auth`).
+2. Бот присылает две кнопки:
+   - `[ 🔗 Подключить Google Fit (Amazfit) ]`
+   - `[ 🔗 Подключить FatSecret ]`
+3. Пользователь кликает по кнопке ➔ открывается официальное окно входа Google / FatSecret ➔ пользователь нажимает «Разрешить».
+4. Vercel автоматически сохраняет токен в **Redis** под ID этого пользователя Telegram.
+5. Бот готов считать баланс по команде `/balance`!
+
+---
+
+## 🔑 Необходимые настройки
+
+### 1. Бесплатный Redis (Upstash / Vercel KV)
+1. В панели [Vercel](https://vercel.com/) в вашем проекте перейдите во вкладку **Storage** ➔ нажмите **Create Database** ➔ выберите **KV** (или создайте бесплатную базу на [upstash.com](https://upstash.com/)).
+2. Скопируйте параметры подключения:
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+
+### 2. Google Cloud Console (OAuth Credentials)
+1. В [Google Cloud Console](https://console.cloud.google.com/) в разделе **Credentials** ➔ создайте **OAuth 2.0 Client ID** (тип: Web Application).
+2. В поле **Authorized redirect URIs** добавьте:
+   - `https://<ВАШ_ДОМЕН_НА_VERCEL>/api/auth/google/callback`
+   - `http://localhost:3000/api/auth/google/callback` (для локальных тестов)
+3. Скопируйте `GOOGLE_CLIENT_ID` и `GOOGLE_CLIENT_SECRET`.
+
+### 3. FatSecret Platform API
+1. В личном кабинете [FatSecret Platform](https://platform.fatsecret.com/) укажите Redirect URI:
+   - `https://<ВАШ_ДОМЕН_НА_VERCEL>/api/auth/fatsecret/callback`
+2. Скопируйте `FATSECRET_CLIENT_ID` и `FATSECRET_CLIENT_SECRET`.
+
+---
+
+## ☁️ Переменные окружения в Vercel
+
+В **Project Settings ➔ Environment Variables** добавьте:
+```env
+TELEGRAM_BOT_TOKEN=...
+APP_URL=https://<ВАШ_ПРОЕКТ>.vercel.app
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+FATSECRET_CLIENT_ID=...
+FATSECRET_CLIENT_SECRET=...
+USER_TIMEZONE=Europe/Moscow
+```
+
+После деплоя привяжите Webhook:
 ```text
-📊 Энергетический баланс:
-📥 Приход: 1850 ккал
-📤 Расход: 2200 ккал
-⚖️ Итог: -350 ккал
+https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<ВАШ_ПРОЕКТ>.vercel.app/api/webhook
 ```
-
----
-
-## 🚀 Быстрый старт и локальный запуск
-
-### 1. Установка зависимостей
-```bash
-npm install
-```
-
-### 2. Запуск тестов
-```bash
-npm test
-```
-
-### 3. Запуск локально (Long Polling)
-Скопируйте `.env.example` в `.env`, заполните токен бота и запустите:
-```bash
-npm start
-```
-
----
-
-## 🔑 Получение API ключей и токенов
-
-### 1. Telegram Bot Token
-1. Откройте [@BotFather](https://t.me/BotFather) в Telegram.
-2. Создайте бота (`/newbot`) и скопируйте полученный токен в `TELEGRAM_BOT_TOKEN`.
-
----
-
-### 2. FatSecret API
-1. Зарегистрируйтесь на [FatSecret Platform API](https://platform.fatsecret.com/).
-2. Создайте новое приложение (App).
-3. Получите `Client ID` и `Client Secret` и укажите их в:
-   - `FATSECRET_CLIENT_ID`
-   - `FATSECRET_CLIENT_SECRET`
-
----
-
-### 3. Google Fit API (Amazfit / Zepp)
-
-#### Шаг А: Синхронизация Amazfit с Google Fit / Health Connect
-1. В приложении **Zepp** (или Zepp Life): зайдите в *Профиль* ➔ *Добавить учетные записи* ➔ подключите **Google Fit** (или Health Connect).
-
-#### Шаг Б: Создание проекта в Google Cloud Console
-1. Перейдите в [Google Cloud Console](https://console.cloud.google.com/).
-2. Создайте новый проект.
-3. В разделе **APIs & Services** ➔ **Library** найдите и включите **Fitness API**.
-4. В разделе **OAuth consent screen** выберите *External*, добавьте свой email как тестового пользователя (Test Users).
-5. В разделе **Credentials** ➔ **Create Credentials** ➔ **OAuth client ID**:
-   - Application type: **Web application**
-   - Authorized redirect URIs: `http://localhost:3000/oauth2callback`
-6. Скопируйте `Client ID` и `Client Secret` в `.env`.
-
-#### Шаг В: Получение Refresh Token в 1 клик
-Запустите интерактивный скрипт:
-```bash
-npm run get-google-token
-```
-Перейдите по ссылке в браузере, авторизуйтесь в своем Google-аккаунте и скопируйте сгенерированный `GOOGLE_REFRESH_TOKEN` в `.env`.
-
----
-
-## ☁️ Развертывание на Vercel
-
-### Вариант 1: Через Vercel CLI
-```bash
-npm i -g vercel
-vercel deploy
-```
-
-### Вариант 2: Через GitHub + Vercel Dashboard
-1. Загрузите репозиторий на GitHub.
-2. Подключите репозиторий в [Vercel Dashboard](https://vercel.com/new).
-3. В настройках проекта (**Settings ➔ Environment Variables**) добавьте:
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_SECRET_TOKEN` (опционально, случайная строка)
-   - `FATSECRET_CLIENT_ID`
-   - `FATSECRET_CLIENT_SECRET`
-   - `GOOGLE_CLIENT_ID`
-   - `GOOGLE_CLIENT_SECRET`
-   - `GOOGLE_REFRESH_TOKEN`
-   - `USER_TIMEZONE` (например `Europe/Moscow`)
-
-### Установка Webhook для Telegram:
-После деплоя на Vercel привяжите Webhook командой (в браузере или через curl):
-```bash
-https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://<YOUR_VERCEL_DOMAIN>/api/webhook&secret_token=<YOUR_SECRET_TOKEN>
-```
-*(Если `TELEGRAM_SECRET_TOKEN` не используется, параметр `&secret_token=...` можно опустить).*
-
----
-
-## 📱 Команды бота
-- `/balance` (или `/today`) — Получить текущий отчет по балансу калорий за день.
-- `/status` — Проверить статус подключения внешних API.
-- `/help` — Справка по работе с ботом.

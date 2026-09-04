@@ -2,6 +2,14 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/api/auth/google/:path*",
+      "destination": "/api/auth/google.js"
+    },
+    {
+      "source": "/api/auth/fatsecret/:path*",
+      "destination": "/api/auth/fatsecret.js"
+    },
+    {
       "source": "/api/webhook",
       "destination": "/api/webhook.js"
     },
