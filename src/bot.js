@@ -60,20 +60,22 @@ function buildPinnedMessageContent(isGoogleConnected, balanceData = null) {
 
   const { diff = 0 } = balanceData || {};
 
-  let btnLabel;
+  let btnLabel, btnStyle;
   if (diff > 0) {
     btnLabel = `❌ +${diff} ккал`;
+    btnStyle = 'danger';   // red
   } else if (diff < 0) {
     btnLabel = `✅ ${diff} ккал`;
+    btnStyle = 'success';  // green
   } else {
     btnLabel = `⚡ 0 ккал`;
+    btnStyle = 'primary';
   }
 
-  // Note: inline keyboard buttons do not support 'style' — color is conveyed via emoji
   return {
     text: pinnedText,
     reply_markup: inlineKb([
-      [{ text: btnLabel, callback_data: 'pinned_hint' }],
+      [{ text: btnLabel, callback_data: 'pinned_hint', style: btnStyle }],
     ]),
   };
 }
@@ -92,30 +94,38 @@ async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
   const existingId = await getPinnedMessageId(userId);
 
   if (existingId) {
-    // Try to edit both text and inline keyboard of the existing pinned message
+    // Update text and keyboard separately — avoids rejection when only one changed
     try {
+      // Edit text (may throw "message is not modified" if text is same — that's fine)
       await ctx.api.editMessageText(ctx.chat.id, Number(existingId), text, {
         parse_mode: 'HTML',
-        reply_markup,
       });
-      return; // successfully updated — done
     } catch (e) {
       const errMsg = e?.description || e?.message || '';
-      // If content is identical Telegram returns this — still fine, no need to recreate
-      if (errMsg.includes('message is not modified')) return;
-      // Otherwise the message is gone — fall through to recreate
-      console.warn('ensurePinnedMessage edit failed:', errMsg);
+      if (!errMsg.includes('message is not modified')) {
+        // Message is truly gone — recreate below
+        console.warn('ensurePinnedMessage editText failed:', errMsg);
+        try { await ctx.api.deleteMessage(ctx.chat.id, Number(existingId)); } catch (_) {}
+        await setPinnedMessageId(userId, null);
+        // Fall through to create new message
+        return _createPinnedMessage(ctx, userId, text, reply_markup);
+      }
     }
 
-    // Delete the old stale pinned message before creating a new one
+    // Always update the keyboard (color changes even when text doesn't)
     try {
-      await ctx.api.deleteMessage(ctx.chat.id, Number(existingId));
+      await ctx.api.editMessageReplyMarkup(ctx.chat.id, Number(existingId), {
+        reply_markup,
+      });
     } catch (_) {}
-    // Clear stale ID so next run starts fresh
-    await setPinnedMessageId(userId, null);
+
+    return;
   }
 
-  // Create a fresh pinned message and pin it
+  return _createPinnedMessage(ctx, userId, text, reply_markup);
+}
+
+async function _createPinnedMessage(ctx, userId, text, reply_markup) {
   const msg = await ctx.api.sendMessage(ctx.chat.id, text, {
     parse_mode: 'HTML',
     reply_markup,
