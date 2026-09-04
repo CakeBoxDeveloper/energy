@@ -1,4 +1,4 @@
-const { Bot, InlineKeyboard } = require('grammy');
+const { Bot, Keyboard, InlineKeyboard } = require('grammy');
 const config = require('./config');
 const { getDailyEnergyBalanceReport, formatEnergyBalance } = require('./services/balance');
 const { getCaloriesConsumedToday } = require('./services/fatsecret');
@@ -9,12 +9,12 @@ const botToken = config.telegram.botToken || '1234567890:AAFakeTokenForModuleIni
 const bot = new Bot(botToken);
 
 /**
- * Builds the main 4-button interactive dashboard keyboard
+ * Builds the bottom persistent Reply Keyboard (в панели под полем ввода)
  * @param {string|number} userId Telegram User ID
  * @param {object} [balanceSummary] Optional balance numbers { consumed, burned, diff }
  */
-async function buildDashboardKeyboard(userId, balanceSummary = null) {
-  const keyboard = new InlineKeyboard();
+async function buildPersistentKeyboard(userId, balanceSummary = null) {
+  const keyboard = new Keyboard();
 
   const [googleData, fatsecretData] = await Promise.all([
     getUserServiceData(userId, 'google'),
@@ -29,42 +29,41 @@ async function buildDashboardKeyboard(userId, balanceSummary = null) {
   if (balanceSummary) {
     const { diff } = balanceSummary;
     if (diff < 0) {
-      balanceBtnText = `⚖️ Баланс: ${diff} ккал 🟢 (Дефицит)`;
+      balanceBtnText = `⚖️ Баланс: ${diff} ккал 🟢`;
     } else if (diff > 0) {
-      balanceBtnText = `⚖️ Баланс: +${diff} ккал 🔴 (Профицит)`;
+      balanceBtnText = `⚖️ Баланс: +${diff} ккал 🔴`;
     } else {
-      balanceBtnText = `⚖️ Баланс: 0 ккал ⚪ (В норме)`;
+      balanceBtnText = `⚖️ Баланс: 0 ккал ⚪`;
     }
   }
 
-  keyboard.text(balanceBtnText, 'action_balance').row();
+  keyboard.text(balanceBtnText).row();
 
-  // Row 2: Two buttons for Google Fit & FatSecret with ✅ indicator
+  // Row 2: Two buttons in a row for Google Fit & FatSecret
   const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔗 Google Fit';
   const fatsecretBtnText = isFatSecretConnected ? 'FatSecret ✅' : '🔗 FatSecret';
 
   keyboard
-    .text(googleBtnText, 'manage_google')
-    .text(fatsecretBtnText, 'manage_fatsecret')
+    .text(googleBtnText)
+    .text(fatsecretBtnText)
     .row();
 
   // Row 3: Refresh button
-  keyboard.text('🔄 Обновить баланс', 'action_refresh');
+  keyboard.text('🔄 Обновить баланс');
 
+  keyboard.resized().persistent();
   return keyboard;
 }
 
-// Handle /start and /help command
+// Handle /start, /help, /menu commands
 bot.command(['start', 'help', 'menu'], async (ctx) => {
   const userId = ctx.from.id;
-  const keyboard = await buildDashboardKeyboard(userId);
+  const keyboard = await buildPersistentKeyboard(userId);
 
   const text =
-`📊 *Панель управления энергетическим балансом*
+`📊 *Энергетический баланс (Amazfit + FatSecret)*
 
-Нажмите кнопку на клавиатуре ниже:
-• *Баланс:* расчет калорий за сегодня (Приход - Расход)
-• *Google Fit / FatSecret:* статус и привязка аккаунтов`;
+Используйте кнопки на панели внизу экрана 👇`;
 
   await ctx.reply(text, {
     parse_mode: 'Markdown',
@@ -72,20 +71,11 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
   });
 });
 
-// Handle /balance command
-bot.command(['balance', 'today'], async (ctx) => {
-  return handleBalanceAction(ctx, false);
-});
-
-// Action: Click on Balance or Refresh
-async function handleBalanceAction(ctx, isCallback = true) {
+// Handle balance calculation
+async function sendBalanceReport(ctx) {
   const userId = ctx.from.id;
 
   try {
-    if (isCallback) {
-      await ctx.answerCallbackQuery({ text: '⏳ Считаю калории...' });
-    }
-
     const [consumedRes, burnedRes] = await Promise.all([
       getCaloriesConsumedToday(userId),
       getCaloriesBurnedToday(userId),
@@ -93,7 +83,7 @@ async function handleBalanceAction(ctx, isCallback = true) {
 
     if (!consumedRes.success || !burnedRes.success) {
       const report = await getDailyEnergyBalanceReport(userId);
-      const keyboard = await buildDashboardKeyboard(userId);
+      const keyboard = await buildPersistentKeyboard(userId);
       return ctx.reply(report.text, {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
@@ -105,7 +95,7 @@ async function handleBalanceAction(ctx, isCallback = true) {
     const diff = consumed - burned;
 
     const message = formatEnergyBalance(consumed, burned);
-    const keyboard = await buildDashboardKeyboard(userId, { consumed, burned, diff });
+    const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
     await ctx.reply(message, {
       reply_markup: keyboard,
@@ -116,152 +106,137 @@ async function handleBalanceAction(ctx, isCallback = true) {
   }
 }
 
-// Callback query: action_balance and action_refresh
-bot.callbackQuery(['action_balance', 'action_refresh'], async (ctx) => {
-  await handleBalanceAction(ctx, true);
-});
-
-// Callback query: manage_google
-bot.callbackQuery('manage_google', async (ctx) => {
+// Handle Google Fit button press on bottom keyboard
+async function sendGoogleFitStatus(ctx) {
   const userId = ctx.from.id;
   const googleData = await getUserServiceData(userId, 'google');
   const isConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
 
-  const keyboard = new InlineKeyboard();
+  const inlineKeyboard = new InlineKeyboard();
 
   if (isConnected) {
     const lastSync = googleData?.updated_at ? new Date(googleData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone }) : 'Ранее';
     const text =
 `⌚ *Google Fit (Amazfit) подключен ✅*
 
-• *Статус:* Активен
 • *Синхронизация:* Сожженные калории за сегодня
-• *Последнее обновление токена:* ${lastSync}
+• *Последнее обновление:* ${lastSync}
 
-Вы можете отвязать аккаунт, чтобы подключить другой.`;
+Чтобы сменить Google аккаунт, нажмите кнопку ниже:`;
 
-    keyboard
-      .text('❌ Отключить Google Fit', 'disconnect_google')
-      .row()
-      .text('⬅️ Назад в меню', 'back_to_menu');
+    inlineKeyboard.text('❌ Отключить Google Fit', 'disconnect_google');
 
     await ctx.reply(text, {
       parse_mode: 'Markdown',
-      reply_markup: keyboard,
+      reply_markup: inlineKeyboard,
     });
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
     const text =
 `⌚ *Google Fit (Amazfit) не подключен*
 
-Нажмите кнопку ниже, чтобы войти в ваш Google аккаунт, синхронизированный с приложением Zepp / часами Amazfit:`;
+Нажмите кнопку ниже для авторизации:`;
 
-    keyboard
-      .url('🔗 Войти в Google Fit', authUrl)
-      .row()
-      .text('⬅️ Назад в меню', 'back_to_menu');
+    inlineKeyboard.url('🔗 Войти в Google Fit', authUrl);
 
     await ctx.reply(text, {
       parse_mode: 'Markdown',
-      reply_markup: keyboard,
+      reply_markup: inlineKeyboard,
     });
   }
+}
 
-  await ctx.answerCallbackQuery();
-});
-
-// Callback query: manage_fatsecret
-bot.callbackQuery('manage_fatsecret', async (ctx) => {
+// Handle FatSecret button press on bottom keyboard
+async function sendFatSecretStatus(ctx) {
   const userId = ctx.from.id;
   const fatsecretData = await getUserServiceData(userId, 'fatsecret');
   const isConnected = !!(fatsecretData?.user_token || fatsecretData?.auth_token || fatsecretData?.access_token || config.fatsecret.accessToken);
 
-  const keyboard = new InlineKeyboard();
+  const inlineKeyboard = new InlineKeyboard();
 
   if (isConnected) {
     const lastSync = fatsecretData?.updated_at ? new Date(fatsecretData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone }) : 'Ранее';
     const text =
 `🥗 *FatSecret подключен ✅*
 
-• *Статус:* Активен
 • *Синхронизация:* Дневник питания и съеденные калории
 • *Последнее обновление:* ${lastSync}
 
-Вы можете отвязать аккаунт, чтобы перезайти.`;
+Чтобы сменить аккаунт FatSecret, нажмите кнопку ниже:`;
 
-    keyboard
-      .text('❌ Отключить FatSecret', 'disconnect_fatsecret')
-      .row()
-      .text('⬅️ Назад в меню', 'back_to_menu');
+    inlineKeyboard.text('❌ Отключить FatSecret', 'disconnect_fatsecret');
 
     await ctx.reply(text, {
       parse_mode: 'Markdown',
-      reply_markup: keyboard,
+      reply_markup: inlineKeyboard,
     });
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/fatsecret/start?userId=${userId}`;
     const text =
 `🥗 *FatSecret не подключен*
 
-Нажмите кнопку ниже, чтобы привязать ваш аккаунт/дневник питания FatSecret:`;
+Нажмите кнопку ниже для подключения дневника:`;
 
-    keyboard
-      .url('🔗 Подключить FatSecret', authUrl)
-      .row()
-      .text('⬅️ Назад в меню', 'back_to_menu');
+    inlineKeyboard.url('🔗 Подключить FatSecret', authUrl);
 
     await ctx.reply(text, {
       parse_mode: 'Markdown',
-      reply_markup: keyboard,
+      reply_markup: inlineKeyboard,
     });
   }
+}
 
-  await ctx.answerCallbackQuery();
+// Command & button handlers
+bot.command(['balance', 'today'], sendBalanceReport);
+bot.command('auth', async (ctx) => {
+  await sendGoogleFitStatus(ctx);
+  await sendFatSecretStatus(ctx);
 });
 
-// Callback query: disconnect_google
+// Inline Callback: disconnect_google
 bot.callbackQuery('disconnect_google', async (ctx) => {
   const userId = ctx.from.id;
   await deleteUserServiceData(userId, 'google');
   await ctx.answerCallbackQuery({ text: 'Google Fit отключен' });
-  const keyboard = await buildDashboardKeyboard(userId);
-  await ctx.reply('🗑️ *Google Fit успешно отключен.* Вы можете привязать другой аккаунт в любое время.', {
+  const keyboard = await buildPersistentKeyboard(userId);
+  await ctx.reply('🗑️ *Google Fit успешно отключен.*', {
     parse_mode: 'Markdown',
     reply_markup: keyboard,
   });
 });
 
-// Callback query: disconnect_fatsecret
+// Inline Callback: disconnect_fatsecret
 bot.callbackQuery('disconnect_fatsecret', async (ctx) => {
   const userId = ctx.from.id;
   await deleteUserServiceData(userId, 'fatsecret');
   await ctx.answerCallbackQuery({ text: 'FatSecret отключен' });
-  const keyboard = await buildDashboardKeyboard(userId);
-  await ctx.reply('🗑️ *FatSecret успешно отключен.* Вы можете привязать другой аккаунт в любое время.', {
+  const keyboard = await buildPersistentKeyboard(userId);
+  await ctx.reply('🗑️ *FatSecret успешно отключен.*', {
     parse_mode: 'Markdown',
     reply_markup: keyboard,
   });
 });
 
-// Callback query: back_to_menu
-bot.callbackQuery('back_to_menu', async (ctx) => {
-  const userId = ctx.from.id;
-  const keyboard = await buildDashboardKeyboard(userId);
-  await ctx.reply('📊 *Главное меню:*', {
-    parse_mode: 'Markdown',
-    reply_markup: keyboard,
-  });
-  await ctx.answerCallbackQuery();
-});
-
-// Fallback message for text messages
+// Text message listener for bottom keyboard buttons
 bot.on('message:text', async (ctx) => {
-  const text = ctx.message.text.trim().toLowerCase();
-  if (text === 'баланс' || text === 'balance') {
-    return handleBalanceAction(ctx, false);
+  const text = ctx.message.text.trim();
+
+  if (text.includes('Баланс') || text.includes('баланс') || text.includes('balance')) {
+    return sendBalanceReport(ctx);
   }
-  const keyboard = await buildDashboardKeyboard(ctx.from.id);
-  await ctx.reply('Используйте кнопки на панели ниже:', { reply_markup: keyboard });
+  if (text.includes('Google Fit')) {
+    return sendGoogleFitStatus(ctx);
+  }
+  if (text.includes('FatSecret')) {
+    return sendFatSecretStatus(ctx);
+  }
+  if (text.includes('Обновить') || text.includes('обновить')) {
+    const keyboard = await buildPersistentKeyboard(ctx.from.id);
+    return ctx.reply('🔄 Клавиатура обновлена.', { reply_markup: keyboard });
+  }
+
+  const keyboard = await buildPersistentKeyboard(ctx.from.id);
+  await ctx.reply('Выберите действие на клавиатуре внизу 👇', { reply_markup: keyboard });
 });
 
 module.exports = bot;

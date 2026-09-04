@@ -2,34 +2,53 @@ const { getCaloriesConsumedToday } = require('./fatsecret');
 const { getCaloriesBurnedToday } = require('./googlefit');
 
 /**
- * Calculates energy balance and formats output message
+ * Calculates energy balance and formats output message as a rich text monospace table (Telegram Rich Text)
  * @param {number} consumed - Consumed calories (Inflow)
  * @param {number} burned - Burned calories (Outflow)
- * @returns {string} Formatted telegram message
+ * @returns {string} Formatted telegram message with HTML table and rich layout
  */
 function formatEnergyBalance(consumed, burned) {
   const diff = consumed - burned;
   let formattedDiff;
+  let statusText = '';
+
   if (diff > 0) {
-    formattedDiff = `+${diff}`;
+    formattedDiff = `+${diff} ккал`;
+    statusText = `🔴 <b>Профицит:</b> съедено на ${diff} ккал больше, чем сожжено.`;
   } else if (diff < 0) {
-    formattedDiff = `${diff}`;
+    formattedDiff = `${diff} ккал`;
+    statusText = `🟢 <b>Дефицит:</b> сожжено на ${Math.abs(diff)} ккал больше, чем съедено.`;
   } else {
-    formattedDiff = `0`;
+    formattedDiff = `0 ккал`;
+    statusText = `⚪ <b>Баланс:</b> потребление равно расходу.`;
   }
 
-  return [
-    `📊 Энергетический баланс:`,
-    `📥 Приход: ${consumed} ккал`,
-    `📤 Расход: ${burned} ккал`,
-    `⚖️ Итог: ${formattedDiff} ккал`,
+  const consumedStr = `${consumed} ккал`.padStart(10, ' ');
+  const burnedStr = `${burned} ккал`.padStart(10, ' ');
+  const diffStr = `${formattedDiff}`.padStart(10, ' ');
+
+  const table = [
+    `📊 <b>Энергетический баланс за сегодня:</b>\n`,
+    `<pre>`,
+    `┌───────────────┬────────────┐`,
+    `│ Параметр      │ Значение   │`,
+    `├───────────────┼────────────┤`,
+    `│ 📥 Приход     │ ${consumedStr} │`,
+    `│ 📤 Расход     │ ${burnedStr} │`,
+    `├───────────────┼────────────┤`,
+    `│ ⚖️ Итог       │ ${diffStr} │`,
+    `└───────────────┴────────────┘`,
+    `</pre>`,
+    `\n<blockquote>${statusText}</blockquote>`,
   ].join('\n');
+
+  return table;
 }
 
 /**
  * Fetches data from FatSecret and Google Fit, computes balance and generates output
  * @param {string|number} [userId] Telegram user ID
- * @returns {Promise<{ text: string, success: boolean }>}
+ * @returns {Promise<{ text: string, success: boolean, parseMode?: string }>}
  */
 async function getDailyEnergyBalanceReport(userId = null) {
   const [consumedResult, burnedResult] = await Promise.all([
@@ -39,27 +58,27 @@ async function getDailyEnergyBalanceReport(userId = null) {
 
   const errors = [];
   if (!consumedResult.success) {
-    errors.push(`• 📥 Приход (FatSecret): ${consumedResult.error || 'недоступен'}`);
+    errors.push(`• 📥 <b>Приход (FatSecret):</b> ${consumedResult.error || 'недоступен'}`);
   }
   if (!burnedResult.success) {
-    errors.push(`• 📤 Расход (Google Fit / Amazfit): ${burnedResult.error || 'недоступен'}`);
+    errors.push(`• 📤 <b>Расход (Google Fit / Amazfit):</b> ${burnedResult.error || 'недоступен'}`);
   }
 
   if (errors.length > 0) {
-    let message = `⚠️ *Не удалось полностью рассчитать баланс:*\n\n` + errors.join('\n');
+    let message = `⚠️ <b>Не удалось рассчитать баланс:</b>\n\n` + errors.join('\n');
     
-    // If one of the services succeeded, provide partial info
     if (consumedResult.success) {
-      message += `\n\n📥 Приход: ${consumedResult.calories} ккал`;
+      message += `\n\n📥 Приход: <b>${consumedResult.calories} ккал</b>`;
     }
     if (burnedResult.success) {
-      message += `\n\n📤 Расход: ${burnedResult.calories} ккал`;
+      message += `\n\n📤 Расход: <b>${burnedResult.calories} ккал</b>`;
     }
 
-    message += `\n\n_Попробуйте повторить запрос позже или проверьте настройки API ключей._`;
+    message += `\n\n<i>Подключите необходимые сервисы кнопками на клавиатуре ниже.</i>`;
     return {
       text: message,
       success: false,
+      parseMode: 'HTML',
     };
   }
 
@@ -67,6 +86,7 @@ async function getDailyEnergyBalanceReport(userId = null) {
   return {
     text: message,
     success: true,
+    parseMode: 'HTML',
   };
 }
 
