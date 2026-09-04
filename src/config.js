@@ -24,7 +24,7 @@ const config = {
   },
   app: {
     timezone: process.env.USER_TIMEZONE || 'Europe/Moscow',
-    appUrl: process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000'),
+    appUrl: (process.env.APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')).replace(/\/+$/, ''),
   },
   redis: {
     url: process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || '',

@@ -1,23 +1,12 @@
 const axios = require('axios');
 const crypto = require('crypto');
-const url = require('url');
 const config = require('../../src/config');
 const { setUserServiceData, getUserServiceData } = require('../../src/services/db');
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 /**
- * Generates OAuth 1.0a HMAC-SHA1 signature according to RFC 5849
+ * Generates OAuth 1.0a signature for platform.fatsecret.com/rest/server.api
  */
 function generateOAuthSignature(httpMethod, baseUrl, params, consumerSecret, tokenSecret = '') {
-  // Sort parameters alphabetically by encoded key
   const sortedKeys = Object.keys(params).sort();
   const paramString = sortedKeys
     .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
@@ -33,195 +22,125 @@ function generateOAuthSignature(httpMethod, baseUrl, params, consumerSecret, tok
   return crypto.createHmac('sha1', signingKey).update(baseString).digest('base64');
 }
 
+/**
+ * Creates or gets an auth profile for the Telegram user directly via FatSecret REST API
+ * (No browser captcha / Cloudflare blocks, 100% server-to-server)
+ */
+async function getOrCreateFatSecretProfile(userId) {
+  const clientId = (config.fatsecret.clientId || '').trim();
+  const clientSecret = (config.fatsecret.clientSecret || '').trim();
+  const apiUrl = config.fatsecret.apiBaseUrl || 'https://platform.fatsecret.com/rest/server.api';
+
+  if (!clientId || !clientSecret) {
+    throw new Error('FATSECRET_CLIENT_ID и FATSECRET_CLIENT_SECRET не настроены в Vercel.');
+  }
+
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+
+  // Try profile.get_auth first, or profile.create
+  let params = {
+    format: 'json',
+    method: 'profile.get_auth',
+    oauth_consumer_key: clientId,
+    oauth_nonce: nonce,
+    oauth_signature_method: 'HMAC-SHA1',
+    oauth_timestamp: timestamp,
+    oauth_version: '1.0',
+    user_id: String(userId),
+  };
+
+  params.oauth_signature = generateOAuthSignature('GET', apiUrl, params, clientSecret, '');
+
+  try {
+    const res = await axios.get(apiUrl, { params, timeout: 8000 });
+    if (res.data?.profile?.auth_token && res.data?.profile?.auth_secret) {
+      return res.data.profile;
+    }
+  } catch (e) {
+    // If not exists, proceed to create
+  }
+
+  // If get_auth didn't find profile, call profile.create
+  const createNonce = crypto.randomBytes(16).toString('hex');
+  const createTimestamp = Math.floor(Date.now() / 1000).toString();
+
+  const createParams = {
+    format: 'json',
+    method: 'profile.create',
+    oauth_consumer_key: clientId,
+    oauth_nonce: createNonce,
+    oauth_signature_method: 'HMAC-SHA1',
+    oauth_timestamp: createTimestamp,
+    oauth_version: '1.0',
+    user_id: String(userId),
+  };
+
+  createParams.oauth_signature = generateOAuthSignature('GET', apiUrl, createParams, clientSecret, '');
+
+  const createRes = await axios.get(apiUrl, { params: createParams, timeout: 8000 });
+  if (createRes.data?.profile?.auth_token) {
+    return createRes.data.profile;
+  }
+
+  throw new Error(createRes.data?.error?.message || JSON.stringify(createRes.data));
+}
+
 module.exports = async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
-  const pathname = parsedUrl.pathname || '';
-  const query = parsedUrl.query || {};
+  const query = req.query || {};
+  const userId = query.userId;
 
-  const callbackUrl = `${config.app.appUrl}/api/auth/fatsecret/callback`;
-
-  // 1. START OAUTH 1.0a FLOW: /api/auth/fatsecret/start?userId=123456
-  if (pathname.includes('/start') || query.action === 'start') {
-    const userId = query.userId;
-    if (!userId) {
-      return res.status(400).send('<h1>Ошибка: Не передан Telegram User ID</h1>');
-    }
-
-    const clientId = (config.fatsecret.clientId || '').trim();
-    const clientSecret = (config.fatsecret.clientSecret || '').trim();
-
-    if (!clientId || !clientSecret) {
-      res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(`
-        <div style="font-family:sans-serif; text-align:center; padding:40px;">
-          <h2>⚠️ Ключи FatSecret не найдены в Vercel</h2>
-          <p>Проверьте переменные <b>FATSECRET_CLIENT_ID</b> и <b>FATSECRET_CLIENT_SECRET</b> в настройках Vercel.</p>
-        </div>
-      `);
-    }
-
-    try {
-      // Step 1: Request temporary token from FatSecret
-      const requestTokenUrl = 'https://www.fatsecret.com/oauth/request_token';
-      const nonce = crypto.randomBytes(16).toString('hex');
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-
-      const oauthParams = {
-        oauth_callback: callbackUrl,
-        oauth_consumer_key: clientId,
-        oauth_nonce: nonce,
-        oauth_signature_method: 'HMAC-SHA1',
-        oauth_timestamp: timestamp,
-        oauth_version: '1.0',
-      };
-
-      oauthParams.oauth_signature = generateOAuthSignature('GET', requestTokenUrl, oauthParams, clientSecret, '');
-
-      const response = await axios.get(requestTokenUrl, {
-        params: oauthParams,
-        timeout: 8000,
-        responseType: 'text',
-      });
-
-      const responseText = response.data || '';
-      const responseParams = new URLSearchParams(responseText);
-      const reqToken = responseParams.get('oauth_token');
-      const reqSecret = responseParams.get('oauth_token_secret');
-
-      if (!reqToken) {
-        throw new Error(`FatSecret response did not contain token: ${responseText}`);
-      }
-
-      // Save temporary token secret in DB
-      await setUserServiceData(userId, 'fatsecret_temp', {
-        oauth_token: reqToken,
-        oauth_token_secret: reqSecret,
-      });
-
-      // Redirect user to FatSecret authorization page
-      const authorizeUrl = `https://www.fatsecret.com/oauth/authorize?oauth_token=${encodeURIComponent(reqToken)}`;
-      return res.redirect(authorizeUrl);
-    } catch (err) {
-      const rawData = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
-      const safeError = escapeHtml(rawData);
-      console.error('FatSecret OAuth Start error:', rawData);
-
-      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Ошибка FatSecret</title>
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 24px; text-align: center; background: #0f172a; color: #fff; }
-            .box { background: #1e293b; padding: 24px; border-radius: 12px; max-width: 480px; margin: 0 auto; }
-            pre { background: #334155; padding: 12px; border-radius: 8px; color: #f87171; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font-size: 13px; text-align: left; }
-          </style>
-        </head>
-        <body>
-          <div class="box">
-            <h2>❌ Ответ сервера FatSecret:</h2>
-            <pre>${safeError}</pre>
-            <p style="color:#94a3b8; font-size:14px;">Проверьте, что в <b>FATSECRET_CLIENT_ID</b> и <b>FATSECRET_CLIENT_SECRET</b> в Vercel вставлены Consumer Key и Consumer Secret из раздела OAuth 1.0.</p>
-          </div>
-        </body>
-        </html>
-      `);
-    }
+  if (!userId) {
+    return res.status(400).send('<h1>Ошибка: Не передан Telegram User ID</h1>');
   }
 
-  // 2. CALLBACK FROM FATSECRET: /api/auth/fatsecret/callback?oauth_token=...&oauth_verifier=...
-  if (pathname.includes('/callback') || query.oauth_token) {
-    const oauthToken = query.oauth_token;
-    const oauthVerifier = query.oauth_verifier;
+  try {
+    const profile = await getOrCreateFatSecretProfile(userId);
 
-    if (!oauthToken || !oauthVerifier) {
-      return res.status(400).send('<h1>Ошибка: Не получены параметры подтверждения от FatSecret</h1>');
-    }
+    await setUserServiceData(userId, 'fatsecret', {
+      user_token: profile.auth_token,
+      user_secret: profile.auth_secret,
+      auth_token: profile.auth_token,
+      auth_secret: profile.auth_secret,
+      updated_at: new Date().toISOString(),
+    });
 
-    try {
-      const clientId = (config.fatsecret.clientId || '').trim();
-      const clientSecret = (config.fatsecret.clientSecret || '').trim();
-
-      // Exchange request token for access token
-      const accessTokenUrl = 'https://www.fatsecret.com/oauth/access_token';
-      const nonce = crypto.randomBytes(16).toString('hex');
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-
-      const oauthParams = {
-        oauth_consumer_key: clientId,
-        oauth_nonce: nonce,
-        oauth_signature_method: 'HMAC-SHA1',
-        oauth_timestamp: timestamp,
-        oauth_token: oauthToken,
-        oauth_verifier: oauthVerifier,
-        oauth_version: '1.0',
-      };
-
-      oauthParams.oauth_signature = generateOAuthSignature('GET', accessTokenUrl, oauthParams, clientSecret, '');
-
-      const response = await axios.get(accessTokenUrl, {
-        params: oauthParams,
-        timeout: 8000,
-        responseType: 'text',
-      });
-
-      const responseParams = new URLSearchParams(response.data);
-      const userToken = responseParams.get('oauth_token');
-      const userSecret = responseParams.get('oauth_token_secret');
-
-      if (!userToken) {
-        throw new Error('Не удалось получить Access Token FatSecret: ' + response.data);
-      }
-
-      const userId = query.userId || query.state || 'default_user';
-
-      await setUserServiceData(userId, 'fatsecret', {
-        user_token: userToken,
-        user_secret: userSecret,
-        access_token: userToken,
-        updated_at: new Date().toISOString(),
-      });
-
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(`
-        <!DOCTYPE html>
-        <html lang="ru">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>FatSecret подключен!</title>
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 20px; text-align: center; }
-            .card { background: #1e293b; border-radius: 16px; padding: 32px; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-            .icon { font-size: 54px; margin-bottom: 16px; }
-            h1 { font-size: 22px; margin-bottom: 8px; color: #4ade80; }
-            p { color: #94a3b8; font-size: 15px; line-height: 1.5; margin-bottom: 24px; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="icon">🥗</div>
-            <h1>FatSecret успешно подключен!</h1>
-            <p>Ваш дневник питания и потребленные калории теперь синхронизируются с ботом.</p>
-            <p>Вернитесь в Telegram и вызовите команду <b>/balance</b>.</p>
-          </div>
-        </body>
-        </html>
-      `);
-    } catch (err) {
-      const rawData = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
-      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(`
-        <div style="font-family:sans-serif; text-align:center; padding:50px;">
-          <h1>❌ Ошибка авторизации FatSecret</h1>
-          <pre>${escapeHtml(rawData)}</pre>
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(`
+      <!DOCTYPE html>
+      <html lang="ru">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>FatSecret подключен!</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 20px; text-align: center; }
+          .card { background: #1e293b; border-radius: 16px; padding: 32px; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+          .icon { font-size: 54px; margin-bottom: 16px; }
+          h1 { font-size: 22px; margin-bottom: 8px; color: #4ade80; }
+          p { color: #94a3b8; font-size: 15px; line-height: 1.5; margin-bottom: 24px; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="icon">🥗</div>
+          <h1>FatSecret успешно подключен!</h1>
+          <p>Ваш профиль и дневник питания FatSecret привязаны к боту.</p>
+          <p>Вернитесь в Telegram и вызовите команду <b>/balance</b>.</p>
         </div>
-      `);
-    }
-  }
+      </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error('FatSecret linking error:', err.response?.data || err.message);
+    const errText = err.response?.data ? JSON.stringify(err.response.data) : err.message;
 
-  res.status(404).send('Not Found');
+    res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(`
+      <div style="font-family:sans-serif; text-align:center; padding:40px; background:#0f172a; color:#fff;">
+        <h1>❌ Ошибка подключения FatSecret</h1>
+        <pre style="background:#1e293b; color:#f87171; padding:15px; border-radius:8px;">${errText}</pre>
+      </div>
+    `);
+  }
 };

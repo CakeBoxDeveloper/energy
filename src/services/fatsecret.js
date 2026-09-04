@@ -51,10 +51,10 @@ async function getCaloriesConsumedToday(userId = null) {
       userData = await getUserServiceData(userId, 'fatsecret');
     }
 
-    // 1. If user has OAuth 1.0a tokens (user_token & user_secret)
-    if (userData && (userData.user_token || userData.oauth_token)) {
-      const userToken = userData.user_token || userData.oauth_token;
-      const userSecret = userData.user_secret || userData.oauth_token_secret || '';
+    // 1. If user has OAuth 1.0a tokens (user_token / auth_token)
+    if (userData && (userData.user_token || userData.oauth_token || userData.auth_token)) {
+      const userToken = userData.user_token || userData.oauth_token || userData.auth_token;
+      const userSecret = userData.user_secret || userData.oauth_token_secret || userData.auth_secret || '';
 
       const requestParams = {
         date: dateNumber.toString(),
