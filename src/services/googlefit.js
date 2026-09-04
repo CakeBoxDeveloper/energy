@@ -120,6 +120,43 @@ async function getCaloriesBurnedToday(userId = null) {
 }
 
 /**
+ * Helper to recursively extract calories from Google Fit values
+ */
+function extractCaloriesFromVal(val) {
+  let sum = 0;
+  if (!val) return 0;
+
+  if (typeof val === 'number') return val;
+
+  if (typeof val.fpVal === 'number') {
+    sum += val.fpVal;
+  } else if (typeof val.intVal === 'number') {
+    sum += val.intVal;
+  }
+
+  if (Array.isArray(val.mapVal)) {
+    for (const entry of val.mapVal) {
+      if (entry.key && (entry.key.toLowerCase().includes('calorie') || entry.key.toLowerCase().includes('energy'))) {
+        if (entry.value && typeof entry.value.fpVal === 'number') {
+          sum += entry.value.fpVal;
+        } else if (entry.value && typeof entry.value.intVal === 'number') {
+          sum += entry.value.intVal;
+        }
+      }
+    }
+  } else if (typeof val.mapVal === 'object' && val.mapVal !== null) {
+    for (const [k, v] of Object.entries(val.mapVal)) {
+      if (k.toLowerCase().includes('calorie') || k.toLowerCase().includes('energy')) {
+        if (typeof v === 'number') sum += v;
+        else if (v && typeof v.fpVal === 'number') sum += v.fpVal;
+      }
+    }
+  }
+
+  return sum;
+}
+
+/**
  * Fetches total consumed calories for today synced into Google Fit from FatSecret / Health Connect
  * @param {string|number} [userId] Telegram user ID
  * @returns {Promise<{ calories: number, success: boolean, error?: string }>}
@@ -132,7 +169,7 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
 
     let totalConsumed = 0;
 
-    // 1. Query aggregate endpoint
+    // 1. Try Aggregate Endpoint
     try {
       const requestBody = {
         aggregateBy: [
@@ -152,76 +189,55 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
         timeout: 8000,
       });
 
-      const buckets = response.data?.bucket || [];
-      for (const bucket of buckets) {
+      for (const bucket of response.data?.bucket || []) {
         for (const dataset of bucket.dataset || []) {
           for (const point of dataset.point || []) {
             for (const val of point.value || []) {
-              if (val.mapVal) {
-                for (const entry of val.mapVal) {
-                  if ((entry.key === 'calories' || entry.key === 'energy') && typeof entry.value?.fpVal === 'number') {
-                    totalConsumed += entry.value.fpVal;
-                  }
-                }
-              } else if (typeof val.fpVal === 'number') {
-                totalConsumed += val.fpVal;
-              } else if (typeof val.intVal === 'number') {
-                totalConsumed += val.intVal;
-              }
+              totalConsumed += extractCaloriesFromVal(val);
             }
           }
         }
       }
     } catch (aggErr) {
-      console.log('Google Fit nutrition aggregate notice:', aggErr.message);
+      console.log('Aggregate nutrition error:', aggErr.message);
     }
 
-    // 2. Fallback: Search all data sources for nutrition
-    if (totalConsumed === 0) {
-      try {
-        const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
-        const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
+    // 2. Query all DataSources for nutrition & calories
+    try {
+      const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
+      const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
 
-        const dataSourcesRes = await axios.get('https://www.googleapis.com/fitness/v1/users/me/dataSources', {
-          headers: { 'Authorization': `Bearer ${accessToken}` },
-          timeout: 8000,
-        });
+      const dataSourcesRes = await axios.get('https://www.googleapis.com/fitness/v1/users/me/dataSources', {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+        timeout: 8000,
+      });
 
-        const sources = dataSourcesRes.data?.dataSource || [];
-        const nutritionSources = sources.filter(s => 
-          s.dataType?.name === 'com.google.nutrition' || 
-          s.dataType?.name === 'com.google.calories.consumed'
-        );
+      const sources = dataSourcesRes.data?.dataSource || [];
+      const relevantSources = sources.filter(s => {
+        const name = (s.dataType?.name || '').toLowerCase();
+        return name.includes('nutrition') || name.includes('calories.consumed');
+      });
 
-        for (const src of nutritionSources) {
-          try {
-            const dsId = encodeURIComponent(src.dataStreamId);
-            const datasetUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/${dsId}/datasets/${startNanos}-${endNanos}`;
-            const dsRes = await axios.get(datasetUrl, {
-              headers: { 'Authorization': `Bearer ${accessToken}` },
-              timeout: 8000,
-            });
+      for (const src of relevantSources) {
+        try {
+          const dsId = encodeURIComponent(src.dataStreamId);
+          const datasetUrl = `https://www.googleapis.com/fitness/v1/users/me/dataSources/${dsId}/datasets/${startNanos}-${endNanos}`;
+          const dsRes = await axios.get(datasetUrl, {
+            headers: { 'Authorization': `Bearer ${accessToken}` },
+            timeout: 8000,
+          });
 
-            for (const point of dsRes.data?.point || []) {
-              for (const val of point.value || []) {
-                if (val.mapVal) {
-                  for (const entry of val.mapVal) {
-                    if ((entry.key === 'calories' || entry.key === 'energy') && typeof entry.value?.fpVal === 'number') {
-                      totalConsumed += entry.value.fpVal;
-                    }
-                  }
-                } else if (typeof val.fpVal === 'number') {
-                  totalConsumed += val.fpVal;
-                }
-              }
+          for (const point of dsRes.data?.point || []) {
+            for (const val of point.value || []) {
+              totalConsumed += extractCaloriesFromVal(val);
             }
-          } catch (dsErr) {
-            // continue
           }
+        } catch (e) {
+          // continue
         }
-      } catch (srcErr) {
-        // continue
       }
+    } catch (srcErr) {
+      console.log('DataSources nutrition error:', srcErr.message);
     }
 
     return {

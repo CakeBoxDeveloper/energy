@@ -1,10 +1,10 @@
 const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./googlefit');
 
 /**
- * Calculates energy balance and formats output message
+ * Calculates energy balance and formats output message as a clean monospace table with native HTML quote
  * @param {number} consumed - Consumed calories (Inflow)
  * @param {number} burned - Burned calories (Outflow)
- * @returns {string} Formatted telegram markdown message
+ * @returns {string} Formatted telegram HTML message
  */
 function formatEnergyBalance(consumed, burned) {
   const diff = consumed - burned;
@@ -13,13 +13,13 @@ function formatEnergyBalance(consumed, burned) {
 
   if (diff > 0) {
     formattedDiff = `+${diff} ккал`;
-    statusText = `🔴 *Профицит:* съедено на ${diff} ккал больше, чем сожжено.`;
+    statusText = `🔴 <b>Профицит:</b> съедено на ${diff} ккал больше, чем сожжено.`;
   } else if (diff < 0) {
     formattedDiff = `${diff} ккал`;
-    statusText = `🟢 *Дефицит:* сожжено на ${Math.abs(diff)} ккал больше, чем съедено.`;
+    statusText = `🟢 <b>Дефицит:</b> сожжено на ${Math.abs(diff)} ккал больше, чем съедено.`;
   } else {
     formattedDiff = `0 ккал`;
-    statusText = `⚪ *Баланс:* потребление равно расходу.`;
+    statusText = `⚪ <b>Баланс:</b> потребление равно расходу.`;
   }
 
   const consumedStr = `${consumed} ккал`.padStart(10, ' ');
@@ -27,16 +27,16 @@ function formatEnergyBalance(consumed, burned) {
   const diffStr = `${formattedDiff}`.padStart(10, ' ');
 
   const message = [
-    `📊 *Энергетический баланс за сегодня:*`,
+    `📊 <b>Энергетический баланс за сегодня:</b>`,
     ``,
-    `┌───────────────┬────────────┐`,
+    `<code>┌───────────────┬────────────┐`,
     `│ 📥 Приход     │ ${consumedStr} │`,
     `│ 📤 Расход     │ ${burnedStr} │`,
     `├───────────────┼────────────┤`,
     `│ ⚖️ Итог       │ ${diffStr} │`,
-    `└───────────────┴────────────┘`,
+    `└───────────────┴────────────┘</code>`,
     ``,
-    `> ${statusText}`,
+    `<blockquote>${statusText}</blockquote>`,
   ].join('\n');
 
   return message;
@@ -55,7 +55,7 @@ async function getDailyEnergyBalanceReport(userId = null) {
 
   if (!burnedResult.success) {
     return {
-      text: `⚠️ *Не удалось рассчитать баланс:*\n\n• 📤 *Расход (Google Fit):* ${burnedResult.error || 'недоступен'}\n\n_Подключите Google Fit кнопкой на клавиатуре ниже._`,
+      text: `⚠️ <b>Не удалось рассчитать баланс:</b>\n\n• 📤 <b>Расход (Google Fit):</b> ${burnedResult.error || 'недоступен'}\n\n<i>Подключите Google Fit кнопкой на клавиатуре ниже.</i>`,
       success: false,
     };
   }

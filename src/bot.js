@@ -51,13 +51,13 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
   const keyboard = await buildPersistentKeyboard(userId);
 
   const text =
-`📊 *Энергетический баланс (Google Fit + Amazfit + FatSecret)*
+`📊 <b>Энергетический баланс (Google Fit + Amazfit + FatSecret)</b>
 
-Все данные синхронизируются через ваш **Google Fit**.
+Все данные синхронизируются через ваш <b>Google Fit</b>.
 Используйте кнопки на панели внизу экрана 👇`;
 
   await ctx.reply(text, {
-    parse_mode: 'Markdown',
+    parse_mode: 'HTML',
     reply_markup: keyboard,
   });
 });
@@ -76,7 +76,7 @@ async function sendBalanceReport(ctx) {
       const report = await getDailyEnergyBalanceReport(userId);
       const keyboard = await buildPersistentKeyboard(userId);
       return ctx.reply(report.text, {
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         reply_markup: keyboard,
       });
     }
@@ -89,7 +89,7 @@ async function sendBalanceReport(ctx) {
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
     await ctx.reply(message, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: keyboard,
     });
   } catch (error) {
@@ -109,31 +109,31 @@ async function sendGoogleFitStatus(ctx) {
   if (isConnected) {
     const lastSync = googleData?.updated_at ? new Date(googleData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone }) : 'Ранее';
     const text =
-`⌚ *Google Fit подключен ✅*
+`⌚ <b>Google Fit подключен ✅</b>
 
-• *Расход калорий:* с часов (Amazfit / Zepp)
-• *Приход калорий:* из дневника питания (FatSecret)
-• *Последнее обновление:* ${lastSync}
+• <b>Расход калорий:</b> с часов (Amazfit / Zepp)
+• <b>Приход калорий:</b> из дневника питания (FatSecret)
+• <b>Последнее обновление:</b> ${lastSync}
 
 Чтобы сменить Google-аккаунт, нажмите кнопку ниже:`;
 
     inlineKeyboard.text('❌ Отключить Google Fit', 'disconnect_google');
 
     await ctx.reply(text, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: inlineKeyboard,
     });
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
     const text =
-`⌚ *Google Fit не подключен*
+`⌚ <b>Google Fit не подключен</b>
 
 Нажмите кнопку ниже для авторизации под вашим Google-аккаунтом:`;
 
     inlineKeyboard.url('🔗 Войти в Google Fit', authUrl);
 
     await ctx.reply(text, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       reply_markup: inlineKeyboard,
     });
   }
@@ -149,8 +149,8 @@ bot.callbackQuery('disconnect_google', async (ctx) => {
   await deleteUserServiceData(userId, 'google');
   await ctx.answerCallbackQuery({ text: 'Google Fit отключен' });
   const keyboard = await buildPersistentKeyboard(userId);
-  await ctx.reply('🗑️ *Google Fit успешно отключен.* Вы можете привязать другой аккаунт.', {
-    parse_mode: 'Markdown',
+  await ctx.reply('🗑️ <b>Google Fit успешно отключен.</b> Вы можете привязать другой аккаунт.', {
+    parse_mode: 'HTML',
     reply_markup: keyboard,
   });
 });
