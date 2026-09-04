@@ -1,3 +1,4 @@
+const axios = require('axios');
 const { Bot, Keyboard, InlineKeyboard } = require('grammy');
 const config = require('./config');
 const { getDailyEnergyBalanceReport, formatEnergyBalance } = require('./services/balance');
@@ -8,41 +9,132 @@ const botToken = config.telegram.botToken || '1234567890:AAFakeTokenForModuleIni
 const bot = new Bot(botToken);
 
 /**
- * Builds the bottom persistent Reply Keyboard (Google Fit only)
+ * Builds the bottom Reply Keyboard with styled colors (Bot API 9.4+ / 10.x button styling)
  * @param {string|number} userId Telegram User ID
  * @param {object} [balanceSummary] Optional balance numbers { consumed, burned, diff }
  */
 async function buildPersistentKeyboard(userId, balanceSummary = null) {
-  const keyboard = new Keyboard();
-
   const googleData = await getUserServiceData(userId, 'google');
   const isGoogleConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
 
-  // Row 1: Full-width Balance button with dynamic + / - and color indicator
   let balanceBtnText = '📊 Показать баланс';
+  let balanceBtnStyle = 'primary';
+
   if (balanceSummary) {
     const { diff } = balanceSummary;
     if (diff < 0) {
-      balanceBtnText = `⚖️ Баланс: ${diff} ккал 🟢 (Дефицит)`;
+      balanceBtnText = `⚖️ Баланс: ${diff} ккал (Дефицит)`;
+      balanceBtnStyle = 'positive'; // Зеленый цвет кнопки
     } else if (diff > 0) {
-      balanceBtnText = `⚖️ Баланс: +${diff} ккал 🔴 (Профицит)`;
+      balanceBtnText = `⚖️ Баланс: +${diff} ккал (Профицит)`;
+      balanceBtnStyle = 'destructive'; // Красный цвет кнопки
     } else {
-      balanceBtnText = `⚖️ Баланс: 0 ккал ⚪ (В норме)`;
+      balanceBtnText = `⚖️ Баланс: 0 ккал (В норме)`;
+      balanceBtnStyle = 'secondary';
     }
   }
 
-  keyboard.text(balanceBtnText).row();
-
-  // Row 2: Google Fit status button & Refresh button
   const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔗 Подключить Google Fit';
 
-  keyboard
-    .text(googleBtnText)
-    .text('🔄 Обновить баланс')
-    .row();
+  // Reply Keyboard with native style support
+  return {
+    keyboard: [
+      [
+        {
+          text: balanceBtnText,
+          style: balanceBtnStyle,
+        },
+      ],
+      [
+        {
+          text: googleBtnText,
+          style: isGoogleConnected ? 'secondary' : 'primary',
+        },
+        {
+          text: '🔄 Обновить баланс',
+          style: 'secondary',
+        },
+      ],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+}
 
-  keyboard.resized().persistent();
-  return keyboard;
+/**
+ * Sends a native Telegram Rich Message (Bot API 10.x sendRichMessage with InputRichBlockTable)
+ */
+async function sendRichBalanceReport(chatId, consumed, burned, diff, replyMarkup) {
+  const isDeficit = diff < 0;
+  const isSurplus = diff > 0;
+  const formattedDiff = isSurplus ? `+${diff} ккал` : `${diff} ккал`;
+
+  const statusText = isDeficit
+    ? `🟢 Дефицит: сожжено на ${Math.abs(diff)} ккал больше, чем съедено.`
+    : isSurplus
+    ? `🔴 Профицит: съедено на ${diff} ккал больше, чем сожжено.`
+    : `⚪ Баланс: потребление равно расходу.`;
+
+  const payload = {
+    chat_id: chatId,
+    rich_message: {
+      blocks: [
+        {
+          type: 'paragraph',
+          text: {
+            text: '📊 Энергетический баланс за сегодня',
+            entities: [{ type: 'bold', offset: 0, length: 35 }],
+          },
+        },
+        {
+          type: 'table',
+          is_bordered: true,
+          is_striped: true,
+          is_compact: false,
+          cells: [
+            [
+              { text: { text: 'Параметр', entities: [{ type: 'bold', offset: 0, length: 8 }] } },
+              { text: { text: 'Значение', entities: [{ type: 'bold', offset: 0, length: 8 }] } },
+            ],
+            [
+              { text: { text: '📥 Приход' } },
+              { text: { text: `${consumed} ккал` } },
+            ],
+            [
+              { text: { text: '📤 Расход' } },
+              { text: { text: `${burned} ккал` } },
+            ],
+            [
+              { text: { text: '⚖️ Итог', entities: [{ type: 'bold', offset: 0, length: 7 }] } },
+              { text: { text: formattedDiff, entities: [{ type: 'bold', offset: 0, length: formattedDiff.length }] } },
+            ],
+          ],
+        },
+        {
+          type: 'block_quotation',
+          text: {
+            text: statusText,
+          },
+        },
+      ],
+    },
+    reply_markup: replyMarkup,
+  };
+
+  try {
+    const res = await axios.post(`https://api.telegram.org/bot${botToken}/sendRichMessage`, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 8000,
+    });
+    return res.data;
+  } catch (err) {
+    console.log('sendRichMessage failed, fallback to standard message:', err.response?.data || err.message);
+    const fallbackText = formatEnergyBalance(consumed, burned);
+    return bot.api.sendMessage(chatId, fallbackText, {
+      parse_mode: 'Markdown',
+      reply_markup: replyMarkup,
+    });
+  }
 }
 
 // Handle /start, /help, /menu commands
@@ -51,10 +143,9 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
   const keyboard = await buildPersistentKeyboard(userId);
 
   const text =
-`📊 *Энергетический баланс (Google Fit + Часы + FatSecret)*
+`📊 *Энергетический баланс (Google Fit + Amazfit + FatSecret)*
 
-Все данные (сожженные калории с часов и съеденные калории из FatSecret) синхронизируются через ваш **Google Fit**.
-
+Все данные синхронизируются через ваш **Google Fit**.
 Используйте кнопки на панели внизу экрана 👇`;
 
   await ctx.reply(text, {
@@ -66,6 +157,7 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
 // Handle balance calculation
 async function sendBalanceReport(ctx) {
   const userId = ctx.from.id;
+  const chatId = ctx.chat.id;
 
   try {
     const [consumedRes, burnedRes] = await Promise.all([
@@ -86,13 +178,9 @@ async function sendBalanceReport(ctx) {
     const burned = burnedRes.calories;
     const diff = consumed - burned;
 
-    const message = formatEnergyBalance(consumed, burned);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
-    await ctx.reply(message, {
-      parse_mode: 'Markdown',
-      reply_markup: keyboard,
-    });
+    await sendRichBalanceReport(chatId, consumed, burned, diff, keyboard);
   } catch (error) {
     console.error('Error calculating balance:', error);
     await ctx.reply('❌ Произошла ошибка при расчете баланса.');
@@ -112,8 +200,8 @@ async function sendGoogleFitStatus(ctx) {
     const text =
 `⌚ *Google Fit подключен ✅*
 
-• *Расход калорий:* с часов (Amazfit / Zepp / WearOS)
-• *Приход калорий:* из дневника питания (FatSecret / MyFitnessPal)
+• *Расход калорий:* с часов (Amazfit / Zepp)
+• *Приход калорий:* из дневника питания (FatSecret)
 • *Последнее обновление:* ${lastSync}
 
 Чтобы сменить Google-аккаунт, нажмите кнопку ниже:`;
@@ -150,7 +238,7 @@ bot.callbackQuery('disconnect_google', async (ctx) => {
   await deleteUserServiceData(userId, 'google');
   await ctx.answerCallbackQuery({ text: 'Google Fit отключен' });
   const keyboard = await buildPersistentKeyboard(userId);
-  await ctx.reply('🗑️ *Google Fit успешно отключен.* Вы можете привязать другой аккаунт.', {
+  await ctx.reply('🗑️ *Google Fit успешно отключен.*', {
     parse_mode: 'Markdown',
     reply_markup: keyboard,
   });
