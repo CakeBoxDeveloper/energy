@@ -22,19 +22,21 @@ function formatEnergyBalance(consumed, burned) {
     statusText = `⚪ <b>Баланс:</b> потребление равно расходу.`;
   }
 
-  const sign = diff > 0 ? '+' : '';
-  const diffEmoji = diff < 0 ? '🟢' : diff > 0 ? '🔴' : '⚪';
+  const consumedStr = `${consumed} ккал`.padStart(11, ' ');
+  const burnedStr = `${burned} ккал`.padStart(11, ' ');
+  const diffStr = `${formattedDiff}`.padStart(11, ' ');
 
   const message = [
     `📊 <b>Энергетический баланс за сегодня:</b>`,
     ``,
-    `<blockquote>` +
-    `📥 <b>Приход:</b>  <code>${consumed} ккал</code>\n` +
-    `📤 <b>Расход:</b>  <code>${burned} ккал</code>\n` +
-    `⚖️ <b>Итог:</b>    <code>${sign}${diff} ккал</code>` +
-    `</blockquote>`,
+    `<code>┌──────────────┬─────────────┐`,
+    `│ Приход       │ ${consumedStr} │`,
+    `│ Расход       │ ${burnedStr} │`,
+    `├──────────────┼─────────────┤`,
+    `│ Итог         │ ${diffStr} │`,
+    `└──────────────┴─────────────┘</code>`,
     ``,
-    `${diffEmoji} ${statusText}`,
+    `<blockquote>${statusText}</blockquote>`,
   ].join('\n');
 
   return message;

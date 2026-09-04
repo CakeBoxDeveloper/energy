@@ -5,8 +5,8 @@ const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./
 const {
   getUserServiceData,
   deleteUserServiceData,
-  getPinnedMessageId,
-  setPinnedMessageId
+  getLastMessageId,
+  setLastMessageId,
 } = require('./services/db');
 
 const botToken = config.telegram.botToken || '1234567890:AAFakeTokenForModuleInitBeforeEnvConfigured';
@@ -71,35 +71,29 @@ async function buildPersistentKeyboard(userId, balanceSummary = null) {
   return keyboard;
 }
 
-// ─── Pinned Status Message (Edited in-place without deleting chat) ─────────────
-async function updatePinnedStatusMessage(ctx, text, replyMarkup = null) {
+// ─── Message management: Send new message FIRST, then delete old ─────────────
+async function sendReplaceMessage(ctx, text, extra = {}) {
   const userId = ctx.from.id;
-  const pinnedId = await getPinnedMessageId(userId);
 
-  if (pinnedId) {
-    try {
-      await ctx.api.editMessageText(ctx.chat.id, Number(pinnedId), text, {
-        parse_mode: 'HTML',
-        reply_markup: replyMarkup || undefined,
-      });
-      return;
-    } catch (e) {
-      // If message was deleted or cannot be edited, fall through to create new
-    }
+  // 1. Get old message ID from storage
+  const oldMsgId = await getLastMessageId(userId);
+
+  // 2. Send the new message with reply_markup attached directly
+  const newMsg = await ctx.reply(text, extra);
+
+  // 3. Immediately store new message ID
+  if (newMsg?.message_id) {
+    await setLastMessageId(userId, newMsg.message_id);
   }
 
-  // Send initial message and pin it
-  const sent = await ctx.reply(text, {
-    parse_mode: 'HTML',
-    reply_markup: replyMarkup || undefined,
-  });
-
-  if (sent?.message_id) {
-    await setPinnedMessageId(userId, sent.message_id);
+  // 4. AFTER new message is visible, delete previous bot message
+  if (oldMsgId) {
     try {
-      await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true });
+      await ctx.api.deleteMessage(ctx.chat.id, Number(oldMsgId));
     } catch (_) {}
   }
+
+  return newMsg;
 }
 
 // ─── /start, /help, /menu ────────────────────────────────────────────────────
@@ -108,7 +102,7 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
   await sendBalanceReport(ctx);
 });
 
-// ─── Balance report (Edits pinned status message) ─────────────────────────────
+// ─── Balance report (Atomic Replace Message) ──────────────────────────────────
 async function sendBalanceReport(ctx) {
   const userId = ctx.from.id;
   await cleanUserMessage(ctx);
@@ -122,9 +116,10 @@ async function sendBalanceReport(ctx) {
     if (!burnedRes.success) {
       const report = await getDailyEnergyBalanceReport(userId);
       const keyboard = await buildPersistentKeyboard(userId);
-      await updatePinnedStatusMessage(ctx, report.text);
-      await ctx.reply('⚙️ Панель обновлена', { reply_markup: keyboard });
-      return;
+      return sendReplaceMessage(ctx, report.text, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
     }
 
     const consumed = consumedRes.success ? consumedRes.calories : 0;
@@ -134,25 +129,28 @@ async function sendBalanceReport(ctx) {
     const message = formatEnergyBalance(consumed, burned);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
-    // Edit the pinned status message in place
-    await updatePinnedStatusMessage(ctx, message);
-
-    // Update bottom keyboard seamlessly
-    await ctx.reply('⚡', { reply_markup: keyboard }).then(msg => {
-      // Delete temporary delivery message immediately so no junk remains
-      ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-    }).catch(() => {});
+    // Send new message with updated reply keyboard, THEN delete previous message
+    await sendReplaceMessage(ctx, message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
   } catch (error) {
     console.error('Error calculating balance:', error);
-    await updatePinnedStatusMessage(ctx, '❌ Ошибка расчета баланса: ' + (error.message || ''));
+    const keyboard = await buildPersistentKeyboard(userId);
+    await sendReplaceMessage(ctx, '❌ Ошибка расчета баланса: ' + (error.message || ''), {
+      reply_markup: keyboard,
+    });
   }
 }
 
 // ─── Google Fit status ────────────────────────────────────────────────────────
 async function sendGoogleFitStatus(ctx) {
   const userId = ctx.from.id;
+  await cleanUserMessage(ctx);
+
   const googleData = await getUserServiceData(userId, 'google');
   const isConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
+  const keyboard = await buildPersistentKeyboard(userId);
 
   if (isConnected) {
     const lastSync = googleData?.updated_at
@@ -177,7 +175,10 @@ async function sendGoogleFitStatus(ctx) {
       [btn('🔴 Отключить Google Fit',  { callback_data: 'disconnect_google', style: 'danger' })],
     ]);
 
-    await updatePinnedStatusMessage(ctx, text, replyMarkup);
+    await sendReplaceMessage(ctx, text, {
+      parse_mode: 'HTML',
+      reply_markup: replyMarkup,
+    });
   } else {
     const authUrl = `${config.app.appUrl}/api/auth/google/start?userId=${userId}`;
 
@@ -191,7 +192,10 @@ async function sendGoogleFitStatus(ctx) {
       [btn('🔵 Войти через Google', { url: authUrl, style: 'primary' })],
     ]);
 
-    await updatePinnedStatusMessage(ctx, text, replyMarkup);
+    await sendReplaceMessage(ctx, text, {
+      parse_mode: 'HTML',
+      reply_markup: replyMarkup,
+    });
   }
 }
 
@@ -213,10 +217,10 @@ bot.callbackQuery('disconnect_google', async (ctx) => {
   await deleteUserServiceData(userId, 'google');
   await ctx.answerCallbackQuery({ text: 'Google Fit отключен' });
   const keyboard = await buildPersistentKeyboard(userId);
-  await updatePinnedStatusMessage(ctx, '🗑️ <b>Google Fit успешно отключен.</b> Вы можете привязать другой аккаунт.');
-  await ctx.reply('⚡', { reply_markup: keyboard }).then(msg => {
-    ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-  }).catch(() => {});
+  await sendReplaceMessage(ctx, '🗑️ <b>Google Fit успешно отключен.</b> Вы можете привязать другой аккаунт.', {
+    parse_mode: 'HTML',
+    reply_markup: keyboard,
+  });
 });
 
 // Bottom keyboard text listener
@@ -235,9 +239,9 @@ bot.on('message:text', async (ctx) => {
   }
 
   const keyboard = await buildPersistentKeyboard(ctx.from.id);
-  await ctx.reply('⚡', { reply_markup: keyboard }).then(msg => {
-    ctx.api.deleteMessage(ctx.chat.id, msg.message_id).catch(() => {});
-  }).catch(() => {});
+  await sendReplaceMessage(ctx, 'Выберите действие на клавиатуре внизу 👇', {
+    reply_markup: keyboard,
+  });
 });
 
 module.exports = bot;
