@@ -9,8 +9,6 @@ const bot = new Bot(botToken);
 
 /**
  * Builds the bottom Reply Keyboard
- * @param {string|number} userId Telegram User ID
- * @param {object} [balanceSummary] Optional balance numbers { consumed, burned, diff }
  */
 async function buildPersistentKeyboard(userId, balanceSummary = null) {
   const keyboard = new Keyboard();
@@ -18,7 +16,6 @@ async function buildPersistentKeyboard(userId, balanceSummary = null) {
   const googleData = await getUserServiceData(userId, 'google');
   const isGoogleConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
 
-  // Row 1: Full-width Balance button with dynamic + / - and color indicator
   let balanceBtnText = '📊 Показать баланс';
   if (balanceSummary) {
     const { diff } = balanceSummary;
@@ -33,8 +30,8 @@ async function buildPersistentKeyboard(userId, balanceSummary = null) {
 
   keyboard.text(balanceBtnText).row();
 
-  // Row 2: Google Fit status & Refresh button
-  const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔗 Подключить Google Fit';
+  // Bottom row
+  const googleBtnText = isGoogleConnected ? '🟢 Google Fit (Подключен)' : '🔵 Подключить Google Fit';
 
   keyboard
     .text(googleBtnText)
@@ -88,9 +85,22 @@ async function sendBalanceReport(ctx) {
     const message = formatEnergyBalance(consumed, burned);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
+    // Inline button attached to the balance message with color styling
+    const inlineButtons = {
+      inline_keyboard: [
+        [
+          {
+            text: diff < 0 ? `🟢 Дефицит: ${diff} ккал` : diff > 0 ? `🔴 Профицит: +${diff} ккал` : `⚪ Баланс: 0 ккал`,
+            callback_data: 'refresh_balance_inline',
+            style: diff < 0 ? 'success' : diff > 0 ? 'destructive' : 'primary',
+          },
+        ],
+      ],
+    };
+
     await ctx.reply(message, {
       parse_mode: 'HTML',
-      reply_markup: keyboard,
+      reply_markup: inlineButtons,
     });
   } catch (error) {
     console.error('Error calculating balance:', error);
@@ -98,13 +108,11 @@ async function sendBalanceReport(ctx) {
   }
 }
 
-// Handle Google Fit button press on bottom keyboard
+// Handle Google Fit button press
 async function sendGoogleFitStatus(ctx) {
   const userId = ctx.from.id;
   const googleData = await getUserServiceData(userId, 'google');
   const isConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
-
-  const inlineKeyboard = new InlineKeyboard();
 
   if (isConnected) {
     const lastSync = googleData?.updated_at ? new Date(googleData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone }) : 'Ранее';
@@ -119,9 +127,27 @@ async function sendGoogleFitStatus(ctx) {
 • <b>Приход калорий:</b> из дневника питания (FatSecret)
 • <b>Последнее обновление:</b> ${lastSync}
 
-Чтобы сменить Google-аккаунт, нажмите кнопку ниже:`;
+Чтобы сменить Google-аккаунт, нажмите красную кнопку отключения:`;
 
-    inlineKeyboard.text('❌ Отключить Google Fit', 'disconnect_google');
+    // Red destructive disconnect button and green status button
+    const inlineKeyboard = {
+      inline_keyboard: [
+        [
+          {
+            text: '🟢 Аккаунт активен (slardaran@gmail.com)',
+            callback_data: 'account_active_info',
+            style: 'success',
+          },
+        ],
+        [
+          {
+            text: '🔴 Отключить Google Fit',
+            callback_data: 'disconnect_google',
+            style: 'destructive',
+          },
+        ],
+      ],
+    };
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -132,9 +158,20 @@ async function sendGoogleFitStatus(ctx) {
     const text =
 `⌚ <b>Google Fit не подключен</b>
 
-Нажмите кнопку ниже для авторизации под вашим Google-аккаунтом:`;
+Нажмите синюю кнопку ниже для авторизации под вашим Google-аккаунтом:`;
 
-    inlineKeyboard.url('🔗 Войти в Google Fit', authUrl);
+    // Blue primary connect button
+    const inlineKeyboard = {
+      inline_keyboard: [
+        [
+          {
+            text: '🔵 Войти через Google',
+            url: authUrl,
+            style: 'primary',
+          },
+        ],
+      ],
+    };
 
     await ctx.reply(text, {
       parse_mode: 'HTML',
@@ -147,7 +184,15 @@ async function sendGoogleFitStatus(ctx) {
 bot.command(['balance', 'today'], sendBalanceReport);
 bot.command('auth', sendGoogleFitStatus);
 
-// Inline Callback: disconnect_google
+// Inline Callbacks
+bot.callbackQuery('refresh_balance_inline', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: '🔄 Баланс актуален' });
+});
+
+bot.callbackQuery('account_active_info', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: '✅ Синхронизация активна' });
+});
+
 bot.callbackQuery('disconnect_google', async (ctx) => {
   const userId = ctx.from.id;
   await deleteUserServiceData(userId, 'google');
