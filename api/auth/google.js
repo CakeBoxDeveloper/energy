@@ -7,6 +7,7 @@ const SCOPES = [
   'https://www.googleapis.com/auth/fitness.activity.read',
   'https://www.googleapis.com/auth/fitness.body.read',
   'https://www.googleapis.com/auth/fitness.nutrition.read',
+  'https://www.googleapis.com/auth/userinfo.email',
 ].join(' ');
 
 module.exports = async (req, res) => {
@@ -55,10 +56,24 @@ module.exports = async (req, res) => {
 
       const { refresh_token, access_token, expires_in } = tokenRes.data;
 
+      // Fetch user email
+      let userEmail = 'slardaran@gmail.com';
+      try {
+        const userInfoRes = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { 'Authorization': `Bearer ${access_token}` },
+        });
+        if (userInfoRes.data?.email) {
+          userEmail = userInfoRes.data.email;
+        }
+      } catch (infoErr) {
+        console.log('Userinfo email fetch notice:', infoErr.message);
+      }
+
       if (refresh_token) {
         await setUserServiceData(userId, 'google', {
           refresh_token,
           access_token,
+          email: userEmail,
           expires_at: Date.now() + (expires_in || 3600) * 1000,
           updated_at: new Date().toISOString(),
         });
@@ -78,14 +93,14 @@ module.exports = async (req, res) => {
             .icon { font-size: 54px; margin-bottom: 16px; }
             h1 { font-size: 22px; margin-bottom: 8px; color: #38bdf8; }
             p { color: #94a3b8; font-size: 15px; line-height: 1.5; margin-bottom: 24px; }
-            a { display: inline-block; background: #2563eb; color: #fff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; }
+            .email { color: #38bdf8; font-weight: bold; }
           </style>
         </head>
         <body>
           <div class="card">
             <div class="icon">✅</div>
             <h1>Google Fit успешно подключен!</h1>
-            <p>Данные активности и сожженные калории с ваших часов Amazfit теперь синхронизируются с ботом.</p>
+            <p>Аккаунт <span class="email">${userEmail}</span> успешно привязан к вашему Telegram-боту.</p>
             <p>Вернитесь в Telegram и вызовите команду <b>/balance</b>.</p>
           </div>
         </body>

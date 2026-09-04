@@ -1,4 +1,3 @@
-const axios = require('axios');
 const { Bot, Keyboard, InlineKeyboard } = require('grammy');
 const config = require('./config');
 const { getDailyEnergyBalanceReport, formatEnergyBalance } = require('./services/balance');
@@ -9,130 +8,41 @@ const botToken = config.telegram.botToken || '1234567890:AAFakeTokenForModuleIni
 const bot = new Bot(botToken);
 
 /**
- * Builds the bottom Reply Keyboard with native color styles (keyboardButtonStyle)
+ * Builds the bottom Reply Keyboard
  * @param {string|number} userId Telegram User ID
  * @param {object} [balanceSummary] Optional balance numbers { consumed, burned, diff }
  */
 async function buildPersistentKeyboard(userId, balanceSummary = null) {
+  const keyboard = new Keyboard();
+
   const googleData = await getUserServiceData(userId, 'google');
   const isGoogleConnected = !!(googleData?.refresh_token || config.googleFit.refreshToken);
 
+  // Row 1: Full-width Balance button with dynamic + / - and color indicator
   let balanceBtnText = '📊 Показать баланс';
-  let balanceBtnStyle = 'primary';
-
   if (balanceSummary) {
     const { diff } = balanceSummary;
     if (diff < 0) {
-      balanceBtnText = `⚖️ Баланс: ${diff} ккал (Дефицит)`;
-      balanceBtnStyle = 'success'; // Зеленый цвет кнопки
+      balanceBtnText = `⚖️ Баланс: ${diff} ккал 🟢 (Дефицит)`;
     } else if (diff > 0) {
-      balanceBtnText = `⚖️ Баланс: +${diff} ккал (Профицит)`;
-      balanceBtnStyle = 'danger'; // Красный цвет кнопки
+      balanceBtnText = `⚖️ Баланс: +${diff} ккал 🔴 (Профицит)`;
     } else {
-      balanceBtnText = `⚖️ Баланс: 0 ккал (В норме)`;
-      balanceBtnStyle = 'secondary';
+      balanceBtnText = `⚖️ Баланс: 0 ккал ⚪ (В норме)`;
     }
   }
 
+  keyboard.text(balanceBtnText).row();
+
+  // Row 2: Google Fit status & Refresh button
   const googleBtnText = isGoogleConnected ? 'Google Fit ✅' : '🔗 Подключить Google Fit';
 
-  return {
-    keyboard: [
-      [
-        {
-          text: balanceBtnText,
-          style: balanceBtnStyle,
-        },
-      ],
-      [
-        {
-          text: googleBtnText,
-          style: isGoogleConnected ? 'secondary' : 'primary',
-        },
-        {
-          text: '🔄 Обновить баланс',
-          style: 'secondary',
-        },
-      ],
-    ],
-    resize_keyboard: true,
-    is_persistent: true,
-  };
-}
+  keyboard
+    .text(googleBtnText)
+    .text('🔄 Обновить баланс')
+    .row();
 
-/**
- * Sends a native Telegram Rich Message (Bot API 10.1 sendRichMessage with InputRichBlockTable)
- */
-async function sendRichBalanceReport(chatId, consumed, burned, diff, replyMarkup) {
-  const isDeficit = diff < 0;
-  const isSurplus = diff > 0;
-  const formattedDiff = isSurplus ? `+${diff} ккал` : `${diff} ккал`;
-
-  const statusText = isDeficit
-    ? `🟢 Дефицит: сожжено на ${Math.abs(diff)} ккал больше, чем съедено.`
-    : isSurplus
-    ? `🔴 Профицит: съедено на ${diff} ккал больше, чем сожжено.`
-    : `⚪ Баланс: потребление равно расходу.`;
-
-  const payload = {
-    chat_id: chatId,
-    rich_message: {
-      blocks: [
-        {
-          type: 'paragraph',
-          text: {
-            text: '📊 Энергетический баланс за сегодня',
-          },
-        },
-        {
-          type: 'table',
-          is_bordered: true,
-          is_striped: true,
-          is_compact: false,
-          cells: [
-            [
-              { text: { text: 'Параметр' } },
-              { text: { text: 'Значение' } },
-            ],
-            [
-              { text: { text: '📥 Приход' } },
-              { text: { text: `${consumed} ккал` } },
-            ],
-            [
-              { text: { text: '📤 Расход' } },
-              { text: { text: `${burned} ккал` } },
-            ],
-            [
-              { text: { text: '⚖️ Итог' } },
-              { text: { text: formattedDiff } },
-            ],
-          ],
-        },
-        {
-          type: 'block_quotation',
-          text: {
-            text: statusText,
-          },
-        },
-      ],
-    },
-    reply_markup: replyMarkup,
-  };
-
-  try {
-    const res = await axios.post(`https://api.telegram.org/bot${botToken}/sendRichMessage`, payload, {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 8000,
-    });
-    return res.data;
-  } catch (err) {
-    console.error('sendRichMessage error:', err.response?.data || err.message);
-    const fallbackText = formatEnergyBalance(consumed, burned);
-    return bot.api.sendMessage(chatId, fallbackText, {
-      parse_mode: 'HTML',
-      reply_markup: replyMarkup,
-    });
-  }
+  keyboard.resized().persistent();
+  return keyboard;
 }
 
 // Handle /start, /help, /menu commands
@@ -155,7 +65,6 @@ bot.command(['start', 'help', 'menu'], async (ctx) => {
 // Handle balance calculation
 async function sendBalanceReport(ctx) {
   const userId = ctx.from.id;
-  const chatId = ctx.chat.id;
 
   try {
     const [consumedRes, burnedRes] = await Promise.all([
@@ -176,9 +85,13 @@ async function sendBalanceReport(ctx) {
     const burned = burnedRes.calories;
     const diff = consumed - burned;
 
+    const message = formatEnergyBalance(consumed, burned);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
 
-    await sendRichBalanceReport(chatId, consumed, burned, diff, keyboard);
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
   } catch (error) {
     console.error('Error calculating balance:', error);
     await ctx.reply('❌ Произошла ошибка при расчете баланса: ' + (error.message || ''));
@@ -195,8 +108,12 @@ async function sendGoogleFitStatus(ctx) {
 
   if (isConnected) {
     const lastSync = googleData?.updated_at ? new Date(googleData.updated_at).toLocaleString('ru-RU', { timeZone: config.app.timezone }) : 'Ранее';
+    const email = googleData?.email || 'slardaran@gmail.com';
+
     const text =
 `⌚ <b>Google Fit подключен ✅</b>
+
+<blockquote>📧 <b>Подключенный аккаунт:</b> ${email}</blockquote>
 
 • <b>Расход калорий:</b> с часов (Amazfit / Zepp)
 • <b>Приход калорий:</b> из дневника питания (FatSecret)
