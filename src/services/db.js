@@ -80,9 +80,36 @@ async function deleteUserServiceData(userId, service = 'all') {
   }
 }
 
+/**
+ * Get last bot message ID for a user
+ */
+async function getLastMessageId(userId) {
+  const redis = getRedis();
+  const key = `user:${userId}:last_msg_id`;
+  if (redis) {
+    return await redis.get(key);
+  }
+  return memoryStore.get(key) || null;
+}
+
+/**
+ * Set last bot message ID for a user
+ */
+async function setLastMessageId(userId, messageId) {
+  const redis = getRedis();
+  const key = `user:${userId}:last_msg_id`;
+  if (redis) {
+    await redis.set(key, messageId);
+  } else {
+    memoryStore.set(key, messageId);
+  }
+}
+
 module.exports = {
   getRedis,
   setUserServiceData,
   getUserServiceData,
   deleteUserServiceData,
+  getLastMessageId,
+  setLastMessageId,
 };
