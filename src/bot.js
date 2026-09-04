@@ -126,8 +126,19 @@ async function sendBalanceReport(ctx) {
     const burned = burnedRes.calories;
     const diff = consumed - burned;
 
-    const message = formatEnergyBalance(consumed, burned);
+    const latestDataMillis = Math.max(consumedRes.lastModifiedMillis || 0, burnedRes.lastModifiedMillis || 0);
+    let dataTimeStr = null;
+    if (latestDataMillis > 0) {
+      dataTimeStr = new Intl.DateTimeFormat('ru-RU', {
+        timeZone: config.app.timezone || 'Europe/Moscow',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(latestDataMillis));
+    }
+
+    const message = formatEnergyBalance(consumed, burned, dataTimeStr);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
+
 
     // Send new message with updated reply keyboard, THEN delete previous message
     await sendReplaceMessage(ctx, message, {

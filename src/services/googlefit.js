@@ -114,6 +114,8 @@ async function getCaloriesBurnedToday(userId = null) {
 
     // 2. Query the official merged or platform calories stream directly for fresher points
     let mergeBurned = 0;
+    let lastModifiedMillis = 0;
+
     try {
       const dataSourcesRes = await axios.get('https://www.googleapis.com/fitness/v1/users/me/dataSources', {
         headers: { 'Authorization': `Bearer ${accessToken}` },
@@ -136,6 +138,10 @@ async function getCaloriesBurnedToday(userId = null) {
         });
 
         for (const point of dsRes.data?.point || []) {
+          if (point.modifiedTimeMillis) {
+            const m = Number(point.modifiedTimeMillis);
+            if (m > lastModifiedMillis) lastModifiedMillis = m;
+          }
           for (const val of point.value || []) {
             if (typeof val.fpVal === 'number') mergeBurned += val.fpVal;
             else if (typeof val.intVal === 'number') mergeBurned += val.intVal;
@@ -150,12 +156,14 @@ async function getCaloriesBurnedToday(userId = null) {
 
     return {
       calories: Math.round(total),
+      lastModifiedMillis,
       success: true,
     };
   } catch (error) {
     const errorMessage = error.response?.data?.error?.message || error.message || 'Unknown Google Fit API error';
     return {
       calories: null,
+      lastModifiedMillis: 0,
       success: false,
       error: `Google Fit: ${errorMessage}`,
     };
@@ -200,7 +208,7 @@ function extractNutritionCalories(val) {
 /**
  * Fetches total consumed calories for today synced into Google Fit from FatSecret
  * @param {string|number} [userId] Telegram user ID
- * @returns {Promise<{ calories: number, success: boolean, error?: string }>}
+ * @returns {Promise<{ calories: number, lastModifiedMillis: number, success: boolean, error?: string }>}
  */
 async function getCaloriesConsumedFromGoogleFit(userId = null) {
   try {
@@ -238,6 +246,7 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
     // while strictly preventing double-counting if points are mirrored across multiple streams
     const seenPoints = new Set();
     let totalCalories = 0;
+    let lastModifiedMillis = 0;
 
     for (const src of targetSources) {
       try {
@@ -249,6 +258,10 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
         });
 
         for (const point of dsRes.data?.point || []) {
+          if (point.modifiedTimeMillis) {
+            const m = Number(point.modifiedTimeMillis);
+            if (m > lastModifiedMillis) lastModifiedMillis = m;
+          }
           for (const val of point.value || []) {
             const cal = extractNutritionCalories(val);
             if (cal > 0) {
@@ -266,11 +279,13 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
 
     return {
       calories: Math.round(totalCalories),
+      lastModifiedMillis,
       success: true,
     };
   } catch (error) {
     return {
       calories: 0,
+      lastModifiedMillis: 0,
       success: false,
       error: error.message,
     };

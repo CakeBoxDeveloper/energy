@@ -2,12 +2,13 @@ const config = require('../config');
 const { getCaloriesBurnedToday, getCaloriesConsumedFromGoogleFit } = require('./googlefit');
 
 /**
- * Calculates energy balance and formats output message as a clean monospace table with native HTML quote
+ * Calculates energy balance and formats output message as a clean mobile-friendly monospace table with native HTML quote
  * @param {number} consumed - Consumed calories (Inflow)
  * @param {number} burned - Burned calories (Outflow)
+ * @param {string} [dataTime] - Timestamp of latest data point from Google Fit
  * @returns {string} Formatted telegram HTML message
  */
-function formatEnergyBalance(consumed, burned) {
+function formatEnergyBalance(consumed, burned, dataTime = null) {
   const diff = consumed - burned;
   let formattedDiff;
   let statusText = '';
@@ -27,27 +28,21 @@ function formatEnergyBalance(consumed, burned) {
   const burnedStr = `${burned} ккал`.padStart(11, ' ');
   const diffStr = `${formattedDiff}`.padStart(11, ' ');
 
-  const now = new Date();
-  const timeStr = new Intl.DateTimeFormat('ru-RU', {
-    timeZone: config.app?.timezone || 'Europe/Moscow',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(now);
+  const timeLabel = dataTime
+    ? `🕒 <i>Данные в Google Fit: от ${dataTime}</i>`
+    : `🕒 <i>Обновлено в ${new Intl.DateTimeFormat('ru-RU', { timeZone: config.app?.timezone || 'Europe/Moscow', hour: '2-digit', minute: '2-digit' }).format(new Date())}</i>`;
 
   const message = [
     `📊 <b>Энергетический баланс за сегодня:</b>`,
     ``,
-    `<code>┌──────────────┬─────────────┐`,
-    `│ Приход       │ ${consumedStr} │`,
-    `│ Расход       │ ${burnedStr} │`,
-    `├──────────────┼─────────────┤`,
-    `│ Итог         │ ${diffStr} │`,
-    `└──────────────┴─────────────┘</code>`,
+    `<code>Приход:   ${consumedStr}`,
+    `Расход:   ${burnedStr}`,
+    `──────────────────────`,
+    `Итог:     ${diffStr}</code>`,
     ``,
     `<blockquote>${statusText}</blockquote>`,
     ``,
-    `🕒 <i>Обновлено: ${timeStr}</i>`,
+    timeLabel,
   ].join('\n');
 
   return message;
