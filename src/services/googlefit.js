@@ -1,20 +1,34 @@
 const axios = require('axios');
 const config = require('../config');
+const { getUserServiceData, setUserServiceData } = require('./db');
 
 let cachedGoogleToken = null;
 let googleTokenExpiresAt = 0;
 
 /**
- * Returns start of today in milliseconds based on user timezone
+ * Returns exact start of today (00:00:00.000) in milliseconds for the user timezone
  */
-function getStartOfDayMillis(timezone = config.app.timezone) {
+function getStartOfDayMillis(timezone = config.app.timezone || 'Europe/Moscow') {
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { timeZone: timezone });
-  const startOfDay = new Date(`${dateStr} 00:00:00`);
-  return startOfDay.getTime();
-}
+  
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+    hour12: false,
+  }).formatToParts(now);
 
-const { getUserServiceData, setUserServiceData } = require('./db');
+  const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10) % 24;
+  const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+  const second = parseInt(parts.find(p => p.type === 'second')?.value || '0', 10);
+  const elapsedMillisToday = (hour * 3600 + minute * 60 + second) * 1000 + (now.getTime() % 1000);
+
+  return now.getTime() - elapsedMillisToday;
+}
 
 /**
  * Exchanges Google OAuth 2.0 refresh token for a fresh access token
@@ -53,7 +67,7 @@ async function getGoogleAccessToken(userId = null) {
 }
 
 /**
- * Fetches total burned calories for today from Google Fit API (synced from Amazfit)
+ * Fetches total burned calories for today ONLY (from 00:00:00 today to current time)
  * @param {string|number} [userId] Telegram user ID
  * @returns {Promise<{ calories: number, success: boolean, error?: string }>}
  */
@@ -69,9 +83,6 @@ async function getCaloriesBurnedToday(userId = null) {
           dataTypeName: 'com.google.calories.expended',
         },
       ],
-      bucketByTime: {
-        durationMillis: 86400000, // 1 day bucket
-      },
       startTimeMillis,
       endTimeMillis,
     };
@@ -87,18 +98,25 @@ async function getCaloriesBurnedToday(userId = null) {
     let totalBurned = 0;
     const buckets = response.data?.bucket || [];
 
-    for (const bucket of buckets) {
-      const datasets = bucket.dataset || [];
-      for (const dataset of datasets) {
-        const points = dataset.point || [];
-        for (const point of points) {
-          const values = point.value || [];
-          for (const val of values) {
-            if (typeof val.fpVal === 'number') {
-              totalBurned += val.fpVal;
-            } else if (typeof val.intVal === 'number') {
-              totalBurned += val.intVal;
+    // If response is bucketed or direct dataset
+    if (buckets.length > 0) {
+      for (const bucket of buckets) {
+        const datasets = bucket.dataset || [];
+        for (const dataset of datasets) {
+          for (const point of dataset.point || []) {
+            for (const val of point.value || []) {
+              if (typeof val.fpVal === 'number') totalBurned += val.fpVal;
+              else if (typeof val.intVal === 'number') totalBurned += val.intVal;
             }
+          }
+        }
+      }
+    } else if (response.data?.dataset) {
+      for (const dataset of response.data.dataset) {
+        for (const point of dataset.point || []) {
+          for (const val of point.value || []) {
+            if (typeof val.fpVal === 'number') totalBurned += val.fpVal;
+            else if (typeof val.intVal === 'number') totalBurned += val.intVal;
           }
         }
       }
