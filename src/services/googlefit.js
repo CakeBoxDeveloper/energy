@@ -75,9 +75,8 @@ async function getCaloriesBurnedToday(userId = null) {
     const endTimeMillis = Date.now() + 60000;
 
     let aggBurned = 0;
-    let dsBurned = 0;
 
-    // 1. Aggregate endpoint
+    // 1. Aggregate endpoint for com.google.calories.expended
     try {
       const requestBody = {
         aggregateBy: [
@@ -112,7 +111,8 @@ async function getCaloriesBurnedToday(userId = null) {
       console.log('Aggregate burned error:', aggErr.message);
     }
 
-    // 2. Query raw DataSources for calories.expended
+    // 2. Query individual DataSources for calories.expended (evaluated individually, never summed across sources)
+    let maxSourceBurned = 0;
     try {
       const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
       const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
@@ -137,21 +137,24 @@ async function getCaloriesBurnedToday(userId = null) {
             timeout: 8000,
           });
 
+          let currentSourceBurned = 0;
           for (const point of dsRes.data?.point || []) {
             for (const val of point.value || []) {
-              if (typeof val.fpVal === 'number') dsBurned += val.fpVal;
-              else if (typeof val.intVal === 'number') dsBurned += val.intVal;
+              if (typeof val.fpVal === 'number') currentSourceBurned += val.fpVal;
+              else if (typeof val.intVal === 'number') currentSourceBurned += val.intVal;
             }
           }
-        } catch (e) {
-          // continue
-        }
+
+          if (currentSourceBurned > maxSourceBurned) {
+            maxSourceBurned = currentSourceBurned;
+          }
+        } catch (_) {}
       }
     } catch (dsErr) {
       console.log('DataSources burned error:', dsErr.message);
     }
 
-    const total = Math.max(aggBurned, dsBurned);
+    const total = Math.max(aggBurned, maxSourceBurned);
 
     return {
       calories: Math.round(total),
@@ -168,54 +171,42 @@ async function getCaloriesBurnedToday(userId = null) {
 }
 
 /**
- * Helper to recursively extract calories from Google Fit values
+ * Helper to recursively extract calories from Google Fit nutrition values
  */
-function extractCaloriesFromVal(val) {
-  let sum = 0;
+function extractNutritionCalories(val) {
   if (!val) return 0;
 
-  if (typeof val === 'number') return val;
-
-  if (typeof val.fpVal === 'number') {
-    sum += val.fpVal;
-  } else if (typeof val.intVal === 'number') {
-    sum += val.intVal;
-  }
-
-  // Handle mapVal (nutrition breakdown maps: e.g. calories, energy, etc.)
+  // Google Fit com.google.nutrition structure:
+  // val.mapVal contains items with key="calories", value={ fpVal: 123.4 }
   if (Array.isArray(val.mapVal)) {
     for (const entry of val.mapVal) {
       const key = (entry.key || '').toLowerCase();
-      if (key.includes('calorie') || key.includes('energy') || key === 'calories') {
+      if (key === 'calories' || key === 'energy' || key.includes('calorie')) {
         if (entry.value && typeof entry.value.fpVal === 'number') {
-          sum += entry.value.fpVal;
+          return entry.value.fpVal;
         } else if (entry.value && typeof entry.value.intVal === 'number') {
-          sum += entry.value.intVal;
+          return entry.value.intVal;
         } else if (typeof entry.value === 'number') {
-          sum += entry.value;
+          return entry.value;
         }
       }
     }
   } else if (typeof val.mapVal === 'object' && val.mapVal !== null) {
     for (const [k, v] of Object.entries(val.mapVal)) {
       const key = k.toLowerCase();
-      if (key.includes('calorie') || key.includes('energy') || key === 'calories') {
-        if (typeof v === 'number') {
-          sum += v;
-        } else if (v && typeof v.fpVal === 'number') {
-          sum += v.fpVal;
-        } else if (v && typeof v.intVal === 'number') {
-          sum += v.intVal;
-        }
+      if (key === 'calories' || key === 'energy' || key.includes('calorie')) {
+        if (typeof v === 'number') return v;
+        if (v && typeof v.fpVal === 'number') return v.fpVal;
+        if (v && typeof v.intVal === 'number') return v.intVal;
       }
     }
   }
 
-  return sum;
+  return 0;
 }
 
 /**
- * Fetches total consumed calories for today synced into Google Fit from FatSecret / Health Connect
+ * Fetches total consumed calories for today synced into Google Fit from FatSecret
  * @param {string|number} [userId] Telegram user ID
  * @returns {Promise<{ calories: number, success: boolean, error?: string }>}
  */
@@ -223,18 +214,15 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
   try {
     const accessToken = await getGoogleAccessToken(userId);
     const startTimeMillis = getStartOfDayMillis();
-    const endTimeMillis = Date.now() + 60000; // include up to next minute
+    const endTimeMillis = Date.now() + 60000;
 
     let aggConsumed = 0;
-    let dsConsumed = 0;
 
-    // 1. Try Aggregate Endpoint
+    // 1. Try standard aggregate endpoint
     try {
       const requestBody = {
         aggregateBy: [
-          { dataTypeName: 'com.google.nutrition.summary' },
           { dataTypeName: 'com.google.nutrition' },
-          { dataTypeName: 'com.google.calories.consumed' },
         ],
         startTimeMillis,
         endTimeMillis,
@@ -249,11 +237,13 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
         timeout: 8000,
       });
 
-      for (const bucket of response.data?.bucket || []) {
-        for (const dataset of bucket.dataset || []) {
+      const buckets = response.data?.bucket || [];
+      for (const bucket of buckets) {
+        const datasets = bucket.dataset || [];
+        for (const dataset of datasets) {
           for (const point of dataset.point || []) {
             for (const val of point.value || []) {
-              aggConsumed += extractCaloriesFromVal(val);
+              aggConsumed += extractNutritionCalories(val);
             }
           }
         }
@@ -262,7 +252,8 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
       console.log('Aggregate nutrition error:', aggErr.message);
     }
 
-    // 2. Query all DataSources for nutrition & calories
+    // 2. Query individual DataSources for nutrition (evaluated individually, never summed across sources)
+    let maxSourceConsumed = 0;
     try {
       const startNanos = (BigInt(startTimeMillis) * BigInt(1000000)).toString();
       const endNanos = (BigInt(endTimeMillis) * BigInt(1000000)).toString();
@@ -275,8 +266,7 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
       const sources = dataSourcesRes.data?.dataSource || [];
       const relevantSources = sources.filter(s => {
         const name = (s.dataType?.name || '').toLowerCase();
-        const streamId = (s.dataStreamId || '').toLowerCase();
-        return name.includes('nutrition') || name.includes('calories') || streamId.includes('fatsecret') || streamId.includes('nutrition');
+        return name.includes('nutrition') || name.includes('calories.consumed');
       });
 
       for (const src of relevantSources) {
@@ -288,21 +278,23 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
             timeout: 8000,
           });
 
+          let currentSourceConsumed = 0;
           for (const point of dsRes.data?.point || []) {
             for (const val of point.value || []) {
-              dsConsumed += extractCaloriesFromVal(val);
+              currentSourceConsumed += extractNutritionCalories(val);
             }
           }
-        } catch (e) {
-          // continue
-        }
+
+          if (currentSourceConsumed > maxSourceConsumed) {
+            maxSourceConsumed = currentSourceConsumed;
+          }
+        } catch (_) {}
       }
-    } catch (srcErr) {
-      console.log('DataSources nutrition error:', srcErr.message);
+    } catch (dsErr) {
+      console.log('DataSources nutrition error:', dsErr.message);
     }
 
-    // Take the maximum found to ensure no entries are missed
-    const total = Math.max(aggConsumed, dsConsumed);
+    const total = Math.max(aggConsumed, maxSourceConsumed);
 
     return {
       calories: Math.round(total),
@@ -316,6 +308,7 @@ async function getCaloriesConsumedFromGoogleFit(userId = null) {
     };
   }
 }
+
 
 module.exports = {
   getCaloriesBurnedToday,
