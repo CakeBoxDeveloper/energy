@@ -7,6 +7,8 @@ const {
   deleteUserServiceData,
   getLastMessageId,
   setLastMessageId,
+  getPinnedMessageId,
+  setPinnedMessageId,
 } = require('./services/db');
 
 const botToken = config.telegram.botToken || '1234567890:AAFakeTokenForModuleInitBeforeEnvConfigured';
@@ -32,6 +34,90 @@ function btn(text, { callback_data, url, style } = {}) {
 
 function inlineKb(rows) {
   return { inline_keyboard: rows };
+}
+
+// ─── Pinned status message ────────────────────────────────────────────────────
+
+/**
+ * Builds text + inline keyboard for the pinned balance message.
+ * Shows a stub when Google Fit is not connected, otherwise shows the balance.
+ *
+ * @param {boolean} isGoogleConnected
+ * @param {{ consumed: number, burned: number, diff: number }|null} balanceData
+ * @returns {{ text: string, reply_markup: object }}
+ */
+function buildPinnedMessageContent(isGoogleConnected, balanceData = null) {
+  if (!isGoogleConnected) {
+    return {
+      text:
+        `📊 <b>Энергетический баланс</b>\n\n` +
+        `<blockquote>⚙️ Для отображения баланса необходимо подключить <b>Google Fit</b>.\n` +
+        `Нажмите кнопку «🔵 Подключить Google Fit» на клавиатуре ниже.</blockquote>`,
+      reply_markup: inlineKb([
+        [btn('⚡ Баланс энергии: — ккал', { callback_data: 'pinned_hint' })],
+      ]),
+    };
+  }
+
+  const { consumed = 0, burned = 0, diff = 0 } = balanceData || {};
+  let sign = diff > 0 ? '+' : '';
+  let statusIcon = diff > 0 ? '🔴' : diff < 0 ? '🟢' : '⚪';
+  let statusLabel = diff > 0 ? 'профицит' : diff < 0 ? 'дефицит' : 'норма';
+
+  return {
+    text:
+      `📊 <b>Энергетический баланс</b>\n\n` +
+      `<code>Приход:  ${String(consumed + ' ккал').padStart(11)}\n` +
+      `Расход:  ${String(burned + ' ккал').padStart(11)}\n` +
+      `──────────────────────\n` +
+      `Итог:    ${String(sign + diff + ' ккал').padStart(11)}</code>\n\n` +
+      `<blockquote>${statusIcon} ${statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1)}: <b>${sign}${diff} ккал</b></blockquote>`,
+    reply_markup: inlineKb([
+      [btn(`⚡ Баланс энергии: ${sign}${diff} ккал`, { callback_data: 'pinned_hint' })],
+    ]),
+  };
+}
+
+/**
+ * Creates (on first call) or edits the pinned balance message.
+ * The pinned message is never deleted — it lives at the top of the chat.
+ *
+ * @param {object} ctx  grammy context
+ * @param {boolean} isGoogleConnected
+ * @param {{ consumed: number, burned: number, diff: number }|null} balanceData
+ */
+async function ensurePinnedMessage(ctx, isGoogleConnected, balanceData = null) {
+  const userId = ctx.from.id;
+  const { text, reply_markup } = buildPinnedMessageContent(isGoogleConnected, balanceData);
+  const existingId = await getPinnedMessageId(userId);
+
+  if (existingId) {
+    // Try to edit the existing pinned message
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, Number(existingId), text, {
+        parse_mode: 'HTML',
+        reply_markup,
+      });
+      return; // successfully updated — done
+    } catch (e) {
+      // Message was deleted by user or Telegram — fall through to create a new one
+    }
+  }
+
+  // Create a fresh pinned message and pin it
+  const msg = await ctx.api.sendMessage(ctx.chat.id, text, {
+    parse_mode: 'HTML',
+    reply_markup,
+  });
+  await setPinnedMessageId(userId, msg.message_id);
+
+  try {
+    await ctx.api.pinChatMessage(ctx.chat.id, msg.message_id, {
+      disable_notification: true,
+    });
+  } catch (_) {
+    // Pinning may fail in private chats without admin rights — silently ignore
+  }
 }
 
 // ─── Bottom Reply Keyboard (1 button per row, Обновить is blue at very bottom)
@@ -114,6 +200,8 @@ async function sendBalanceReport(ctx) {
     ]);
 
     if (!burnedRes.success) {
+      // Google Fit not connected — update pinned message with stub
+      await ensurePinnedMessage(ctx, false);
       const report = await getDailyEnergyBalanceReport(userId);
       const keyboard = await buildPersistentKeyboard(userId);
       return sendReplaceMessage(ctx, report.text, {
@@ -125,6 +213,9 @@ async function sendBalanceReport(ctx) {
     const consumed = consumedRes.success ? consumedRes.calories : 0;
     const burned = burnedRes.calories;
     const diff = consumed - burned;
+
+    // Update pinned message with actual balance
+    await ensurePinnedMessage(ctx, true, { consumed, burned, diff });
 
     const latestDataMillis = Math.max(consumedRes.lastModifiedMillis || 0, burnedRes.lastModifiedMillis || 0);
     let dataTimeStr = null;
@@ -138,7 +229,6 @@ async function sendBalanceReport(ctx) {
 
     const message = formatEnergyBalance(consumed, burned, dataTimeStr);
     const keyboard = await buildPersistentKeyboard(userId, { consumed, burned, diff });
-
 
     // Send new message with updated reply keyboard, THEN delete previous message
     await sendReplaceMessage(ctx, message, {
@@ -215,6 +305,10 @@ bot.command(['balance', 'today'], sendBalanceReport);
 bot.command('auth', sendGoogleFitStatus);
 
 // Inline callbacks
+bot.callbackQuery('pinned_hint', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: '📊 Это закреплённый баланс. Нажмите «🔄 Обновить баланс» для актуальных данных.' });
+});
+
 bot.callbackQuery('back_to_balance', async (ctx) => {
   await ctx.answerCallbackQuery();
   return sendBalanceReport(ctx);
